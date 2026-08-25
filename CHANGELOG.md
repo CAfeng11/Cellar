@@ -4,7 +4,9 @@
 
 ## [Unreleased]
 
-暂无待发布变更。
+### 文档
+
+- README 首屏明确 Cellar 是原生 SwiftUI 图形应用，并加入仪表盘、我的酒窖与 Runtime Doctor 的真实运行截图。
 
 ## [2.2.2] - 2026-08-25
 

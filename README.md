@@ -2,14 +2,40 @@
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2026%2B-black)
 ![Swift](https://img.shields.io/badge/Swift-5-orange)
-![Version](https://img.shields.io/badge/version-2.2.2-blue)
+[![Release](https://img.shields.io/github/v/release/CAfeng11/Cellar?label=release)](https://github.com/CAfeng11/Cellar/releases/latest)
+[![CI](https://github.com/CAfeng11/Cellar/actions/workflows/ci.yml/badge.svg)](https://github.com/CAfeng11/Cellar/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Cellar 是一款原生 macOS 菜单栏工具，用一张可解释的本机维护面板管理 Homebrew 更新与 Node/Python 运行时秩序。
+Cellar 是一款原生 SwiftUI macOS 图形应用，通过菜单栏入口和完整主窗口管理 Homebrew 更新与 Node/Python 运行时秩序。
 
-> A native macOS menu bar app for explainable Homebrew maintenance and local runtime diagnostics.
+> A native SwiftUI macOS app for explainable Homebrew maintenance and local runtime diagnostics.
 
-当前公开候选版本为 `2.2.2`。它延续 `2.2.1` 的产品边界，集中补强可靠性诊断、Runtime 全局工具定位、结构化状态表达和公开协作基础。
+**这不是 CLI 应用。** Homebrew、npm、Python 与 shell 命令是 Cellar 的后端事实来源；日常检查、筛选、诊断和操作都在原生 GUI 中完成。
+
+<p align="center">
+  <a href="docs/images/cellar-runtime-doctor.jpeg">
+    <img src="docs/images/cellar-runtime-doctor.jpeg" alt="Cellar Runtime Doctor 原生 macOS 界面" width="1000">
+  </a>
+</p>
+
+<p align="center"><em>Runtime Doctor：在一个原生界面里查看 Node、Python、PATH Policy 与全局工具入口。</em></p>
+
+当前公开版本为 `2.2.2`。它延续 `2.2.1` 的产品边界，集中补强可靠性诊断、Runtime 全局工具定位、结构化状态表达和公开协作基础。
+
+## 真实运行界面
+
+以下画面直接截取自 Cellar `2.2.2` 在 macOS 上的真实运行状态，并非设计稿或终端输出。
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/images/cellar-dashboard.jpeg"><img src="docs/images/cellar-dashboard.jpeg" alt="Cellar Homebrew 仪表盘"></a></td>
+    <td width="50%"><a href="docs/images/cellar-library.jpeg"><img src="docs/images/cellar-library.jpeg" alt="Cellar 我的酒窖资产列表"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>仪表盘</strong><br>区分普通更新、自更新 Cask 与版本记录差异</td>
+    <td align="center"><strong>我的酒窖</strong><br>筛选 Formula/Cask，查看版本、大小与可执行操作</td>
+  </tr>
+</table>
 
 ## 为什么做 Cellar
 
