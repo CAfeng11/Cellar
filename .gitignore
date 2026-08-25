@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Xcode user data
+xcuserdata/
+DerivedData/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Swift Package Manager
+.build/
+
+# Xcode archives
+*.xcarchive
+
+# Logs
+*.log
+
+# Secrets and local environment overrides
+*.env
+
+# Private product planning and release exports
+协议/
+public-release/
