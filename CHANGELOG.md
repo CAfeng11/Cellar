@@ -6,7 +6,7 @@
 
 ### 文档
 
-- README 首屏明确 Cellar 是原生 SwiftUI 图形应用，并加入仪表盘、我的酒窖与 Runtime Doctor 的真实运行截图。
+- README 首屏明确 Cellar 是原生 SwiftUI 图形应用，并加入真实操作 GIF、运行截图和 GitHub 社交预览封面。
 
 ## [2.2.2] - 2026-08-25
 

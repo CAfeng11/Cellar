@@ -13,18 +13,18 @@ Cellar 是一款原生 SwiftUI macOS 图形应用，通过菜单栏入口和完�
 **这不是 CLI 应用。** Homebrew、npm、Python 与 shell 命令是 Cellar 的后端事实来源；日常检查、筛选、诊断和操作都在原生 GUI 中完成。
 
 <p align="center">
-  <a href="docs/images/cellar-runtime-doctor.jpeg">
-    <img src="docs/images/cellar-runtime-doctor.jpeg" alt="Cellar Runtime Doctor 原生 macOS 界面" width="1000">
+  <a href="docs/images/cellar-demo.gif">
+    <img src="docs/images/cellar-demo.gif" alt="Cellar 原生 macOS 图形界面操作演示" width="900">
   </a>
 </p>
 
-<p align="center"><em>Runtime Doctor：在一个原生界面里查看 Node、Python、PATH Policy 与全局工具入口。</em></p>
+<p align="center"><em>10 秒真实操作演示：仪表盘 → 我的酒窖 → Runtime Doctor。</em></p>
 
 当前公开版本为 `2.2.2`。它延续 `2.2.1` 的产品边界，集中补强可靠性诊断、Runtime 全局工具定位、结构化状态表达和公开协作基础。
 
 ## 真实运行界面
 
-以下画面直接截取自 Cellar `2.2.2` 在 macOS 上的真实运行状态，并非设计稿或终端输出。
+以下静态画面直接截取自 Cellar `2.2.2` 在 macOS 上的真实运行状态，并非设计稿或终端输出。
 
 <table>
   <tr>
