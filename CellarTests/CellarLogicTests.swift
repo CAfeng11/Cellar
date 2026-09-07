@@ -1524,7 +1524,7 @@ final class CellarLogicTests: XCTestCase {
             outdatedPackages: [],
             operationSummary: nil,
             runtimeSnapshots: [],
-            librarySummary: summary,
+            librarySummary: summary
         ).items
 
         XCTAssertFalse(userVisibleText(in: items).containsUserFacingEnglishStateTerms)

@@ -4,9 +4,21 @@
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-09-07
+
+### 发布
+
+- 新增 Universal macOS Release 打包脚本：Developer ID 签名、Hardened Runtime、Apple notarization、stapling、Gatekeeper 复核和 SHA-256 校验缺一不可。
+- 新增基于版本 tag 的 GitHub Release 工作流；签名或公证失败时不会发布未签名兜底包。
+
+### 兼容性
+
+- 最低运行系统从 macOS 26 下调到 macOS 14，并增加 macOS 14 / macOS 26 双 CI 验证。
+
 ### 文档
 
-- README 首屏明确 Cellar 是原生 SwiftUI 图形应用，并加入真实操作 GIF、运行截图和 GitHub 社交预览封面。
+- README 改为英文主入口和简体中文入口，首屏直接说明 Homebrew 版本混乱与 Node/Python PATH 冲突两个核心问题。
+- 增加固定的签名版下载入口、与普通 Homebrew GUI 的差异说明和完整发布文档。
 
 ## [2.2.2] - 2026-08-25
 
