@@ -26,6 +26,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Select Xcode 16.2 on macOS 14
+        if: matrix.runner == 'macos-14'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
       - name: Show toolchain
         run: |
           sw_vers
