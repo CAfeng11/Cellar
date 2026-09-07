@@ -25,15 +25,18 @@ before anything is modified.
 
 ## Download
 
-[**Download the latest signed macOS build**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS.zip)
+[**Download the unsigned 2.2.3 beta (Universal App)**](https://github.com/CAfeng11/Cellar/releases/download/v2.2.3-beta.1/Cellar-macOS-unsigned.zip)
 
 Requirements: macOS 14 or newer and an existing Homebrew installation. The release
-is a Universal app for Apple Silicon and Intel Macs. Published binaries are signed,
-notarized, stapled, and checked with Gatekeeper before they are attached to a release.
+is a Universal app for Apple Silicon and Intel Macs.
 
-> The first signed binary is being prepared as `2.2.3`. Until it appears on the
-> Releases page, use the source-build instructions below. Cellar does not publish an
-> unsigned fallback as a public download.
+> This beta is not Developer ID signed or notarized. macOS will identify it as coming
+> from an unidentified developer. After moving Cellar to Applications, Control-click
+> the app and choose **Open**, then confirm **Open**. Only download it from this
+> repository and verify the SHA-256 file on the release page.
+
+A signed and notarized stable build is planned. The unsigned beta is provided now so
+people can evaluate Cellar without installing Xcode.
 
 ## Why Cellar
 

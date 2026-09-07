@@ -1,5 +1,19 @@
 # Releasing Cellar
 
+## Unsigned prerelease
+
+Unsigned evaluation builds use a hyphenated prerelease tag such as
+`v2.2.3-beta.1`. Build them locally with:
+
+```bash
+./script/package_unsigned_prerelease.sh
+```
+
+Publish both files from `dist/`, mark the GitHub release as a prerelease, and state
+clearly that the app is neither Developer ID signed nor notarized. Hyphenated tags
+skip the signed release workflow. Never rename an unsigned artifact to
+`Cellar-macOS.zip`; that filename is reserved for verified signed releases.
+
 Cellar public binaries must be signed with a **Developer ID Application**
 certificate, notarized by Apple, stapled, and accepted by Gatekeeper. An ad hoc
 or Apple Development signature is not a public release.
