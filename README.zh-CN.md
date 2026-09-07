@@ -24,14 +24,17 @@ Cellar 是一款原生 SwiftUI 菜单栏应用和完整窗口工作区。它不�
 
 ## 下载
 
-[**下载最新签名版 Cellar**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS.zip)
+[**下载未签名的 2.2.3 测试版（Universal App）**](https://github.com/CAfeng11/Cellar/releases/download/v2.2.3-beta.1/Cellar-macOS-unsigned.zip)
 
 需要 macOS 14 或更高版本，以及现有 Homebrew 安装。Release 是同时支持 Apple
-Silicon 与 Intel Mac 的 Universal App；上传前必须经过 Developer ID 签名、Apple
-notarization、stapling 和 Gatekeeper 检查。
+Silicon 与 Intel Mac 的 Universal App。
 
-> 首个签名安装包正在作为 `2.2.3` 准备。在 Releases 页面出现安装包之前，请使用
-> 下方源码构建方式。Cellar 不会用未签名包冒充正式公开下载。
+> 此测试版尚未经过 Developer ID 签名和 Apple 公证，macOS 会提示它来自身份不明的
+> 开发者。把 Cellar 移到“应用程序”后，按住 Control 点按 App，选择“打开”，再确认
+> “打开”。请只从本仓库下载，并核对 Release 页面提供的 SHA-256 文件。
+
+后续仍会提供签名和公证的稳定版。现在先提供未签名测试版，让没有安装 Xcode 的用户
+也能实际体验 Cellar。
 
 ## 为什么需要 Cellar
 
