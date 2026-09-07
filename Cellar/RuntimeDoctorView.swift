@@ -1523,7 +1523,6 @@ private func packageHeaderLead(package: RuntimeGlobalPackage) -> some View {
 }
 
 @MainActor
-@MainActor
 private func packageActions(package: RuntimeGlobalPackage, model: RuntimeDoctorViewModel) -> some View {
     if model.activePackageActionID == package.id {
         return AnyView(ProgressView().controlSize(.small))
