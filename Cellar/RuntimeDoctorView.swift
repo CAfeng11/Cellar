@@ -1490,6 +1490,7 @@ private func runtimeHeaderLead(runtime: RuntimeInstallation) -> some View {
     }
 }
 
+@MainActor
 private func runtimeActions(runtime: RuntimeInstallation, model: RuntimeDoctorViewModel) -> some View {
     HStack(spacing: 8) {
         Button("启用建议") { model.copyActivationHint(for: runtime) }
@@ -1502,6 +1503,7 @@ private func runtimeActions(runtime: RuntimeInstallation, model: RuntimeDoctorVi
     .font(.caption)
 }
 
+@MainActor
 private func runtimeHeaderRow(runtime: RuntimeInstallation, model: RuntimeDoctorViewModel) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 12) {
         runtimeHeaderLead(runtime: runtime)
@@ -1520,6 +1522,8 @@ private func packageHeaderLead(package: RuntimeGlobalPackage) -> some View {
     }
 }
 
+@MainActor
+@MainActor
 private func packageActions(package: RuntimeGlobalPackage, model: RuntimeDoctorViewModel) -> some View {
     if model.activePackageActionID == package.id {
         return AnyView(ProgressView().controlSize(.small))
@@ -1547,6 +1551,7 @@ private func packageActions(package: RuntimeGlobalPackage, model: RuntimeDoctorV
     )
 }
 
+@MainActor
 private func packageHeaderRow(package: RuntimeGlobalPackage, model: RuntimeDoctorViewModel) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 12) {
         packageHeaderLead(package: package)
