@@ -1,4 +1,4 @@
-# Cellar for macOS
+# Cellar — macOS Homebrew GUI + Node/Python Runtime Doctor
 
 [简体中文](README.zh-CN.md)
 
@@ -25,18 +25,18 @@ before anything is modified.
 
 ## Download
 
-[**Download the unsigned 2.2.3 beta (Universal App)**](https://github.com/CAfeng11/Cellar/releases/download/v2.2.3-beta.1/Cellar-macOS-unsigned.zip)
+[**Download Cellar 2.2.3 Unsigned Preview (Universal App)**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS-unsigned.zip)
 
 Requirements: macOS 14 or newer and an existing Homebrew installation. The release
 is a Universal app for Apple Silicon and Intel Macs.
 
-> This beta is not Developer ID signed or notarized. macOS will identify it as coming
+> This stable-channel preview is not Developer ID signed or notarized. macOS will identify it as coming
 > from an unidentified developer. After moving Cellar to Applications, Control-click
 > the app and choose **Open**, then confirm **Open**. Only download it from this
 > repository and verify the SHA-256 file on the release page.
 
-A signed and notarized stable build is planned. The unsigned beta is provided now so
-people can evaluate Cellar without installing Xcode.
+A signed and notarized stable build is planned. This unsigned preview is provided now
+so people can evaluate Cellar without installing Xcode.
 
 ## Why Cellar
 

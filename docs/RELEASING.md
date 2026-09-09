@@ -14,6 +14,11 @@ clearly that the app is neither Developer ID signed nor notarized. Hyphenated ta
 skip the signed release workflow. Never rename an unsigned artifact to
 `Cellar-macOS.zip`; that filename is reserved for verified signed releases.
 
+The stable-channel unsigned preview exception uses the `v2.2.3` tag and the
+release title `Cellar 2.2.3 Unsigned Preview`. It keeps the asset name
+`Cellar-macOS-unsigned.zip`, and the release notes must repeat that the app is
+not Developer ID signed or notarized. The signed release workflow is skipped unless
+the repository variable `CELLAR_SIGNED_RELEASE` is set to `true`.
 Cellar public binaries must be signed with a **Developer ID Application**
 certificate, notarized by Apple, stapled, and accepted by Gatekeeper. An ad hoc
 or Apple Development signature is not a public release.
@@ -60,7 +65,8 @@ assessment, and creates a ZIP plus SHA-256 checksum in `dist/`.
 
 ## GitHub release
 
-The release workflow runs for version tags matching `v*`. Configure these
+The release workflow runs for version tags matching `v*` when the repository
+variable `CELLAR_SIGNED_RELEASE` is `true`. Configure these
 repository secrets before creating a tag:
 
 - `APPLE_DEVELOPER_ID_P12_BASE64`
@@ -70,7 +76,7 @@ repository secrets before creating a tag:
 - `APPLE_NOTARY_KEY_ID`
 - `APPLE_NOTARY_ISSUER_ID`
 
-The workflow does not publish an unsigned fallback. It creates or updates the
+The signed workflow does not publish an unsigned fallback. It creates or updates the
 GitHub Release only after signing, notarization, stapling, Gatekeeper assessment,
 and checksum generation all succeed.
 
