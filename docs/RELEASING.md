@@ -19,7 +19,6 @@ release title `Cellar 2.2.3 Unsigned Preview`. It keeps the asset name
 `Cellar-macOS-unsigned.zip`, and the release notes must repeat that the app is
 not Developer ID signed or notarized. The signed release workflow is skipped unless
 the repository variable `CELLAR_SIGNED_RELEASE` is set to `true`.
-
 Cellar public binaries must be signed with a **Developer ID Application**
 certificate, notarized by Apple, stapled, and accepted by Gatekeeper. An ad hoc
 or Apple Development signature is not a public release.
