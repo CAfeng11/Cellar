@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   package:
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ !contains(github.ref_name, '-') && vars.CELLAR_SIGNED_RELEASE == 'true' }}
     runs-on: macos-26
     timeout-minutes: 45
 

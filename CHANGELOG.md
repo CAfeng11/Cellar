@@ -8,6 +8,7 @@
 
 ### 发布
 
+- 当前 `v2.2.3` 为稳定渠道的未签名预览版，安装包和 SHA-256 校验文件直接附在 GitHub Release；正式签名公证包后续替换。
 - 新增 Universal macOS Release 打包脚本：Developer ID 签名、Hardened Runtime、Apple notarization、stapling、Gatekeeper 复核和 SHA-256 校验缺一不可。
 - 新增基于版本 tag 的 GitHub Release 工作流；签名或公证失败时不会发布未签名兜底包。
 
@@ -18,7 +19,7 @@
 ### 文档
 
 - README 改为英文主入口和简体中文入口，首屏直接说明 Homebrew 版本混乱与 Node/Python PATH 冲突两个核心问题。
-- 增加固定的签名版下载入口、与普通 Homebrew GUI 的差异说明和完整发布文档。
+- 增加固定的安装包下载入口、与普通 Homebrew GUI 的差异说明和完整发布文档。
 
 ## [2.2.2] - 2026-08-25
 
