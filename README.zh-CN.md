@@ -24,7 +24,7 @@ Cellar 是一款原生 SwiftUI 菜单栏应用和完整窗口工作区。它不�
 
 ## 下载
 
-[**下载 Cellar 2.2.3 未签名预览版（Universal App）**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS-unsigned.zip)
+[**下载 Cellar 2.2.3 build 2 未签名预览版（Universal App）**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS-unsigned.zip)
 
 需要 macOS 14 或更高版本，以及现有 Homebrew 安装。Release 是同时支持 Apple
 Silicon 与 Intel Mac 的 Universal App。
@@ -35,6 +35,21 @@ Silicon 与 Intel Mac 的 Universal App。
 
 后续仍会提供签名和公证的稳定版。现在先提供未签名预览版，让没有安装 Xcode 的用户
 也能实际体验 Cellar。
+
+## 2.2.3 build 2 更新说明
+
+2026 年 9 月 20 日修订版沿用 `v2.2.3` 标签，已替换此前的安装包。已下载旧包的用户需要
+重新下载，并使用 [Release 页面](https://github.com/CAfeng11/Cellar/releases/tag/v2.2.3)
+更新后的 SHA-256 文件核验。
+
+- Xcode 许可未接受时，界面直接显示原因、影响和处理步骤，并提供可复制命令。
+  Cellar 不会自动接受许可或执行管理员命令。
+- 运行时明确区分未检查、扫描中、扫描失败与成功；旧快照不再被当作当前环境正常的证明。
+- Homebrew 检查失败不再显示“尚未检查”或绿色空列表。同一次失败只保留一张完整诊断卡，
+  原始错误可展开查看。
+
+验证情况：本地 87 项测试通过，GitHub macOS 14 / macOS 26 CI 通过，已安装应用的更新检查、
+酒窖刷新和运行时扫描均已实机验证。完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 为什么需要 Cellar
 
@@ -70,7 +85,7 @@ Cellar 面向希望使用 GUI、又不愿失去证据链的开发者和 Mac 高�
 - 单项/批量升级、Formula Pin/Unpin、安装、卸载与清理
 - 区分普通更新、自更新 Cask、仓库版本差异与 Homebrew receipt 差异
 - 读取 Cask App bundle 实际版本，避免把 receipt 冒充当前 App 版本
-- 代理、DNS、网络、端点、权限、超时和 brew 缺失的结构化诊断
+- 代理、DNS、网络、端点、权限、超时、brew 缺失和 Xcode 许可错误的结构化诊断
 - 耗时操作可取消，并提供操作后复核摘要
 
 ### Runtime Doctor

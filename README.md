@@ -25,7 +25,7 @@ before anything is modified.
 
 ## Download
 
-[**Download Cellar 2.2.3 Unsigned Preview (Universal App)**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS-unsigned.zip)
+[**Download Cellar 2.2.3 build 2 Unsigned Preview (Universal App)**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS-unsigned.zip)
 
 Requirements: macOS 14 or newer and an existing Homebrew installation. The release
 is a Universal app for Apple Silicon and Intel Macs.
@@ -37,6 +37,24 @@ is a Universal app for Apple Silicon and Intel Macs.
 
 A signed and notarized stable build is planned. This unsigned preview is provided now
 so people can evaluate Cellar without installing Xcode.
+
+## What's new in 2.2.3 build 2
+
+The September 20, 2026 revision replaces the earlier build under the same `v2.2.3`
+tag. If you downloaded the previous package, download it again and verify it using
+the updated SHA-256 file on the [release page](https://github.com/CAfeng11/Cellar/releases/tag/v2.2.3).
+
+- Xcode license errors now show the cause, impact, and next steps directly in the
+  interface, with a copyable command. Cellar does not accept the license or run
+  administrator commands automatically.
+- Runtime status distinguishes unchecked, scanning, failed, and successful scans.
+  A previous snapshot is not presented as proof that the current environment is healthy.
+- Failed Homebrew checks no longer appear as “not checked” or a green empty list.
+  Each failure has one detailed diagnosis card; raw errors remain expandable.
+
+Validation: 87 local tests passed, GitHub CI passed on macOS 14 and macOS 26, and
+installed-app update checks, library refresh, and runtime scans were verified.
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Why Cellar
 
@@ -75,7 +93,7 @@ evidence behind the result.
 - Separate states for ordinary updates, self-updating Casks, repository-version
   differences, and Homebrew receipt differences
 - App bundle version inspection instead of treating a receipt as the installed app
-- Structured proxy, DNS, network, endpoint, permission, timeout, and missing-brew
+- Structured proxy, DNS, network, endpoint, permission, timeout, missing-brew, and Xcode-license
   diagnostics
 - Cancellation and post-operation verification summaries for long-running work
 
