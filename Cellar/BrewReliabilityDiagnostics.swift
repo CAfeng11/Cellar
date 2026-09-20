@@ -1,6 +1,7 @@
 import Foundation
 
 enum BrewReliabilityIssueKind: String, Codable, CaseIterable, Sendable {
+    case xcodeLicense
     case network
     case dns
     case proxy
@@ -11,6 +12,7 @@ enum BrewReliabilityIssueKind: String, Codable, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
+        case .xcodeLicense: return "Xcode 许可未接受"
         case .network: return "网络连接异常"
         case .dns: return "DNS 解析异常"
         case .proxy: return "代理可能不可用"
@@ -47,6 +49,13 @@ enum BrewReliabilityDiagnostics {
 
     static func diagnose(text: String) -> BrewReliabilityIssue {
         let normalized = text.lowercased()
+
+        if normalized.contains("xcode"), containsAny(normalized, [
+            "you have not agreed", "license has not been accepted",
+            "license agreements have not been accepted"
+        ]) {
+            return issue(for: .xcodeLicense)
+        }
 
         if containsAny(normalized, [
             "not writable",
@@ -121,6 +130,16 @@ enum BrewReliabilityDiagnostics {
 
     private static func issue(for kind: BrewReliabilityIssueKind) -> BrewReliabilityIssue {
         switch kind {
+        case .xcodeLicense:
+            return BrewReliabilityIssue(
+                kind: kind,
+                title: "Xcode 许可协议尚未接受",
+                explanation: "系统开发工具因 Xcode 许可协议未接受而停止执行。",
+                impact: "Homebrew 检查、已安装列表读取和运行时扫描可能失败；当前结果不能用于确认软件是否最新或环境是否正常。",
+                nextStep: "在终端运行 sudo xcodebuild -license，阅读并同意协议（需要管理员密码）；完成后重新检查 Homebrew 并刷新运行时诊断。",
+                actionTitle: "查看处理步骤",
+                manualCommands: ["sudo xcodebuild -license"]
+            )
         case .brewMissing:
             return BrewReliabilityIssue(
                 kind: kind,

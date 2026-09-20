@@ -2,7 +2,7 @@ import XCTest
 @testable import Cellar
 
 final class CellarLogicTests: XCTestCase {
-    func testDashboardSummaryShowsClearStateWhenNothingNeedsAction() {
+    func testDashboardSummaryDoesNotTreatUnscannedRuntimeAsClear() {
         let summary = DashboardHealthSummary.make(
             brewStatus: .upToDate,
             outdatedPackages: [],
@@ -11,9 +11,9 @@ final class CellarLogicTests: XCTestCase {
             librarySummary: LibrarySummary(repoDiffCount: 0, autoUpdatesCount: 0, sizeUnknownCount: 0, leafCount: 0)
         )
 
-        XCTAssertEqual(summary.severity, .clear)
+        XCTAssertEqual(summary.severity, .attention)
         XCTAssertEqual(summary.headline, "Homebrew 无可升级包")
-        XCTAssertEqual(summary.detail, "各域暂无明显待处理项。")
+        XCTAssertEqual(summary.domains.first { $0.id == "runtime" }?.value, "未检查")
         XCTAssertEqual(summary.domains.map(\.title), ["Homebrew 更新", "Runtime 环境", "酒窖清点", "最近任务"])
         XCTAssertTrue(summary.items.isEmpty)
     }
@@ -461,6 +461,69 @@ final class CellarLogicTests: XCTestCase {
             BrewOperationPlanner.recommendation(for: BrewError.executionFailed(code: 1, message: "/opt/homebrew is not writable")),
             "请先人工核对目录所有者和写入权限，再按 Homebrew 官方建议处理。"
         )
+    }
+
+    func testFailedCheckOverridesIdleHeadlineAndDeduplicatesMatchingOperation() {
+        let error = BrewError.executionFailed(code: 1, message: "You have not agreed to the Xcode license.")
+        let failure = HomebrewSnapshotProvenance.failed(kind: .outdated, source: .brewOutdated,
+            error: error, previous: .notCaptured(kind: .outdated))
+        let operation = BrewOperationPlanner.failureSummary(kind: .checkUpdates, startedAt: Date(), error: error)
+        let summary = DashboardHealthSummary.make(brewStatus: .idle, outdatedPackages: [],
+            operationSummary: operation, runtimeSnapshots: [],
+            librarySummary: LibrarySummary(repoDiffCount: 0, autoUpdatesCount: 0, sizeUnknownCount: 0, leafCount: 0),
+            homebrewSnapshotProvenance: failure)
+        XCTAssertTrue(summary.headline.contains("检查失败"))
+        XCTAssertFalse(summary.headline.contains("尚未检查"))
+        XCTAssertFalse(summary.items.contains { $0.id == "brew.not-checked" })
+        XCTAssertFalse(DashboardView.shouldShowOperationSummary(operation, diagnosticFailure: failure.failureMessage))
+        XCTAssertTrue(DashboardView.shouldShowOperationSummary(operation, diagnosticFailure: "another failure"))
+        XCTAssertTrue(DashboardView.shouldShowOperationSummary(operation, diagnosticFailure: nil))
+        XCTAssertEqual(summary.domains.first { $0.id == "recent-task" }?.value, "检查更新失败")
+    }
+
+    func testXcodeLicenseErrorsHaveActionableDiagnosis() {
+        for message in [
+            "Error: You have not agreed to the Xcode license. sudo xcodebuild -license accept",
+            "You have not agreed to the Xcode license agreements. Please run sudo xcodebuild -license",
+            "YOU HAVE NOT AGREED TO THE XCODE LICENSE. github.com proxy permission denied"
+        ] {
+            let issue = BrewReliabilityDiagnostics.diagnose(text: message)
+            XCTAssertEqual(issue.kind, .xcodeLicense)
+            XCTAssertEqual(issue.settingsSection, .homebrewService)
+            XCTAssertTrue(issue.nextStep.contains("重新检查"))
+            XCTAssertEqual(issue.manualCommands, ["sudo xcodebuild -license"])
+        }
+        XCTAssertEqual(BrewReliabilityDiagnostics.diagnose(text: "Xcode build failed: unknown compiler error").kind, .unknown)
+    }
+
+    func testRuntimeScanFailureOverridesEmptyAndPreviousHealthySnapshots() {
+        for snapshots in [[], [makeNodeSnapshot(issues: [])]] {
+            let summary = DashboardHealthSummary.make(
+                brewStatus: .upToDate, outdatedPackages: [], operationSummary: nil,
+                runtimeSnapshots: snapshots,
+                librarySummary: LibrarySummary(repoDiffCount: 0, autoUpdatesCount: 0, sizeUnknownCount: 0, leafCount: 0),
+                runtimeScanState: .failed("You have not agreed to the Xcode license agreements.")
+            )
+            let runtime = summary.domains.first { $0.id == "runtime" }
+            XCTAssertEqual(runtime?.value, "扫描失败")
+            XCTAssertEqual(runtime?.severity, .critical)
+            XCTAssertEqual(summary.severity, .critical)
+            XCTAssertTrue(summary.items.contains { $0.id == "runtime.scan.failed" })
+            XCTAssertTrue(runtime?.detail.contains(snapshots.isEmpty ? "尚无可用快照" : "上次成功快照") == true)
+        }
+    }
+
+    func testRuntimeUncheckedAndScanningAreNotHealthy() {
+        for (state, expected) in [(RuntimeScanState.notChecked, "未检查"), (.scanning, "扫描中"), (.succeeded, "正常")] {
+            let summary = DashboardHealthSummary.make(
+                brewStatus: .upToDate, outdatedPackages: [], operationSummary: nil,
+                runtimeSnapshots: [makeNodeSnapshot(issues: [])],
+                librarySummary: LibrarySummary(repoDiffCount: 0, autoUpdatesCount: 0, sizeUnknownCount: 0, leafCount: 0),
+                runtimeScanState: state
+            )
+            XCTAssertEqual(summary.domains.first { $0.id == "runtime" }?.value, expected)
+            XCTAssertFalse(summary.items.contains { $0.id == "runtime.scan.failed" })
+        }
     }
 
     func testBrewReliabilityDiagnosticsClassifiesBrewMissing() {
@@ -1714,7 +1777,8 @@ final class CellarLogicTests: XCTestCase {
             operationSummary: nil,
             runtimeSnapshots: [],
             runtimeGlobalToolsSummary: runtimeSummary,
-            librarySummary: LibrarySummary(repoDiffCount: 0, autoUpdatesCount: 0, sizeUnknownCount: 0, leafCount: 0)
+            librarySummary: LibrarySummary(repoDiffCount: 0, autoUpdatesCount: 0, sizeUnknownCount: 0, leafCount: 0),
+            runtimeScanState: .succeeded
         )
 
         XCTAssertEqual(summary.headline, "Homebrew 无可升级包，仍有环境/清点事项需关注")

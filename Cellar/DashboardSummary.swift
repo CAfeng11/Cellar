@@ -1,5 +1,17 @@
 import Foundation
 
+enum RuntimeScanState: Equatable, Sendable {
+    case notChecked
+    case scanning
+    case succeeded
+    case failed(String)
+
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+}
+
 enum DashboardSeverity: Int, Codable, Comparable, Sendable {
     case clear = 0
     case attention = 1
@@ -66,9 +78,19 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
         runtimeSnapshots: [RuntimeSnapshot],
         runtimeGlobalToolsSummary: RuntimeGlobalToolsDashboardSummary = .empty,
         librarySummary: LibrarySummary,
-        homebrewSnapshotProvenance: HomebrewSnapshotProvenance? = nil
+        homebrewSnapshotProvenance: HomebrewSnapshotProvenance? = nil,
+        runtimeScanState: RuntimeScanState? = nil
     ) -> DashboardHealthSummary {
+        let scanState = runtimeScanState ?? (runtimeSnapshots.isEmpty ? .notChecked : .succeeded)
         var items: [DashboardActionItem] = []
+        if case .failed(let message) = scanState {
+            let issue = BrewReliabilityDiagnostics.diagnose(text: message)
+            items.append(DashboardActionItem(
+                id: "runtime.scan.failed", source: "Runtime",
+                title: "运行时扫描失败", detail: issue.kind == .unknown ? "未能确认环境状态，请打开运行时诊断查看失败详情。" : issue.title,
+                severity: .critical, actionTitle: "查看处理步骤", action: .showRuntime
+            ))
+        }
         let runtimeAttentionCount = runtimeSnapshots.reduce(0) { count, snapshot in
             count + snapshot.diagnosticIssues.filter { $0.severity >= .warning }.count
         }
@@ -99,7 +121,7 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
                 action: .showUpdates
             ))
         case .idle:
-            if outdatedPackages.isEmpty {
+            if outdatedPackages.isEmpty && (homebrewSnapshotProvenance == nil || homebrewSnapshotProvenance?.commandStatus == .notRun) {
                 items.append(DashboardActionItem(
                     id: "brew.not-checked",
                     source: "Homebrew",
@@ -143,7 +165,6 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
             if $0.severity != $1.severity { return $0.severity > $1.severity }
             return $0.source < $1.source
         }
-        let severity = ordered.map(\.severity).max() ?? .clear
         let domains = domainStatuses(
             brewStatus: brewStatus,
             outdatedPackages: outdatedPackages,
@@ -152,13 +173,16 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
             runtimeAttentionCount: runtimeAttentionCount,
             runtimeMaxSeverity: runtimeMaxSeverity,
             runtimeGlobalToolsSummary: runtimeGlobalToolsSummary,
+            runtimeScanState: scanState,
+            hasRuntimeSnapshot: !runtimeSnapshots.isEmpty,
             librarySummary: librarySummary
         )
+        let severity = max(ordered.map(\.severity).max() ?? .clear, domains.map(\.severity).max() ?? .clear)
         return DashboardHealthSummary(
             severity: severity,
             headline: headline(
                 brewStatus: brewStatus,
-                runtimeAttentionCount: runtimeAttentionCount + runtimeGlobalToolsSummary.attentionCount,
+                runtimeAttentionCount: runtimeAttentionCount + runtimeGlobalToolsSummary.attentionCount + (scanState.isFailed ? 1 : 0),
                 libraryAttentionCount: librarySummary.attentionCount,
                 itemCount: ordered.count,
                 severity: severity,
@@ -293,6 +317,16 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
         severity: DashboardSeverity,
         homebrewSnapshotProvenance: HomebrewSnapshotProvenance?
     ) -> String {
+        if let provenance = homebrewSnapshotProvenance {
+            if provenance.commandStatus == .failed {
+                return provenance.fallbackState == .usingLastSuccessfulSnapshot
+                    ? "Homebrew 检查失败，更新状态待确认（保留上次结果）"
+                    : "Homebrew 检查失败，更新状态待确认"
+            }
+            if provenance.commandStatus == .cancelled {
+                return "Homebrew 检查已取消，更新状态待确认"
+            }
+        }
         let secondaryCount = runtimeAttentionCount + libraryAttentionCount
         switch brewStatus {
         case .outdated(let count):
@@ -326,6 +360,8 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
         runtimeAttentionCount: Int,
         runtimeMaxSeverity: RuntimeIssueSeverity,
         runtimeGlobalToolsSummary: RuntimeGlobalToolsDashboardSummary,
+        runtimeScanState: RuntimeScanState,
+        hasRuntimeSnapshot: Bool,
         librarySummary: LibrarySummary
     ) -> [DashboardDomainStatus] {
         [
@@ -337,7 +373,9 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
             runtimeDomainStatus(
                 attentionCount: runtimeAttentionCount,
                 maxSeverity: runtimeMaxSeverity,
-                globalToolsSummary: runtimeGlobalToolsSummary
+                globalToolsSummary: runtimeGlobalToolsSummary,
+                scanState: runtimeScanState,
+                hasSnapshot: hasRuntimeSnapshot
             ),
             libraryDomainStatus(summary: librarySummary),
             recentTaskDomainStatus(summary: operationSummary)
@@ -353,7 +391,7 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
             return DashboardDomainStatus(
                 id: "homebrew",
                 title: "Homebrew 更新",
-                value: provenance.fallbackState == .usingLastSuccessfulSnapshot ? "状态待确认" : "检查失败",
+                value: provenance.commandStatus == .notRun ? "未检查" : (provenance.commandStatus == .cancelled ? "已取消" : (provenance.fallbackState == .usingLastSuccessfulSnapshot ? "状态待确认" : "检查失败")),
                 detail: provenance.detailText,
                 severity: provenance.commandStatus == .notRun ? .attention : .warning,
                 action: provenance.commandStatus == .notRun ? .checkUpdates : .showSettings(.homebrewService),
@@ -407,8 +445,31 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
     private static func runtimeDomainStatus(
         attentionCount: Int,
         maxSeverity: RuntimeIssueSeverity,
-        globalToolsSummary: RuntimeGlobalToolsDashboardSummary
+        globalToolsSummary: RuntimeGlobalToolsDashboardSummary,
+        scanState: RuntimeScanState,
+        hasSnapshot: Bool
     ) -> DashboardDomainStatus {
+        if scanState != .succeeded {
+            let value: String
+            let detail: String
+            switch scanState {
+            case .failed(let message):
+                let issue = BrewReliabilityDiagnostics.diagnose(text: message)
+                value = "扫描失败"
+                detail = (issue.kind == .unknown ? "未能确认环境状态。" : issue.title + "。")
+                    + (hasSnapshot ? "当前显示上次成功快照，不能代表当前环境。" : "尚无可用快照，不能判断环境是否正常。")
+            case .scanning:
+                value = "扫描中"
+                detail = hasSnapshot ? "正在重新检查；现有结果来自上次成功快照。" : "等待扫描完成后确认环境状态。"
+            default:
+                value = "未检查"
+                detail = "尚未扫描，无法确认 Node / Python / PATH 状态。"
+            }
+            return DashboardDomainStatus(id: "runtime", title: "Runtime 环境", value: value,
+                detail: detail, severity: scanState.isFailed ? .critical : .attention,
+                action: .showRuntime, actionTitle: "查看运行时")
+        }
+
         let issueSeverity: DashboardSeverity
         if maxSeverity >= .high {
             issueSeverity = .critical
@@ -480,8 +541,8 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
         return DashboardDomainStatus(
             id: "recent-task",
             title: "最近任务",
-            value: summary.compactRecapText,
-            detail: summary.recommendedNextAction ?? summary.summaryText,
+            value: summary.status == .failed ? "\(summary.operationKind.displayName)失败" : summary.compactRecapText,
+            detail: summary.reliabilityIssue?.title ?? summary.recommendedNextAction ?? summary.summaryText,
             severity: severity,
             action: nil,
             actionTitle: nil

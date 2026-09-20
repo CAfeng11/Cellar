@@ -1514,6 +1514,37 @@ struct InstallView: View {
         }.frame(minWidth: 600, minHeight: 400)
     }
 }
+struct DiagnosticFailureView: View {
+    let message: String
+    @State private var copied = false
+
+    var body: some View {
+        let issue = BrewReliabilityDiagnostics.diagnose(text: message)
+        VStack(alignment: .leading, spacing: 10) {
+            Label(issue.kind == .unknown ? "检查失败，状态待确认" : issue.title,
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.headline).foregroundStyle(.red)
+            Text(issue.kind == .unknown ? "本次检查未完成，不能据此判断环境正常或软件已是最新。" : issue.explanation)
+            if issue.kind != .unknown { Text(issue.impact) }
+            Text(issue.nextStep).fixedSize(horizontal: false, vertical: true)
+            if let command = issue.manualCommands.first, issue.kind == .xcodeLicense {
+                Button(copied ? "已复制，待你在终端执行" : "复制处理命令") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                    copied = true
+                }
+            }
+            DisclosureGroup("原始错误详情") {
+                Text(message).font(.caption.monospaced()).textSelection(.enabled)
+            }
+        }
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 struct DashboardView: View {
     @EnvironmentObject var appState: AppState
     var optionKeyPressed: Bool
@@ -1527,7 +1558,8 @@ struct DashboardView: View {
             runtimeSnapshots: runtimeModel.dashboardSnapshots,
             runtimeGlobalToolsSummary: runtimeModel.dashboardGlobalToolsSummary,
             librarySummary: appState.librarySummary,
-            homebrewSnapshotProvenance: appState.outdatedSnapshotProvenance
+            homebrewSnapshotProvenance: appState.outdatedSnapshotProvenance,
+            runtimeScanState: runtimeModel.dashboardScanState
         )
         GeometryReader { proxy in
             let showsPackageTable = shouldShowPackageTable
@@ -1566,6 +1598,17 @@ struct DashboardView: View {
         return !appState.outdatedPackages.isEmpty || appState.isEverythingBusy
     }
 
+    private var diagnosticFailureMessage: String? {
+        if let message = appState.outdatedSnapshotProvenance.failureMessage { return message }
+        if case .error(let message) = appState.status { return message }
+        return nil
+    }
+
+    static func shouldShowOperationSummary(_ summary: BrewOperationSummary, diagnosticFailure: String?) -> Bool {
+        guard summary.status == .failed, let diagnosticFailure else { return true }
+        return !summary.summaryText.contains(diagnosticFailure)
+    }
+
     @ViewBuilder
     private func dashboardExpandableContent(_ dashboardSummary: DashboardHealthSummary) -> some View {
         DashboardHealthSummaryView(summary: dashboardSummary) { action in
@@ -1575,7 +1618,14 @@ struct DashboardView: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
 
-        if let summary = appState.latestBrewOperationSummary {
+        if let failure = diagnosticFailureMessage {
+            DiagnosticFailureView(message: failure)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
+        }
+
+        if let summary = appState.latestBrewOperationSummary,
+           Self.shouldShowOperationSummary(summary, diagnosticFailure: diagnosticFailureMessage) {
             BrewOperationSummaryView(summary: summary)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 6)
@@ -1592,12 +1642,14 @@ struct DashboardView: View {
 
     @ViewBuilder
     private func dashboardStandaloneState(_ dashboardSummary: DashboardHealthSummary) -> some View {
-        if case .error(let m) = appState.status {
-            ErrorView(msg: m, nextStep: "下一步：打开事件中心或高级日志，确认失败原因；网络、代理或权限问题可跳到偏好设置核对。")
-                .padding(.horizontal, 16)
-                .padding(.vertical, 24)
-        } else if appState.outdatedPackages.isEmpty && !appState.isEverythingBusy {
-            EmptyView(title: Self.dashboardEmptyTitle(), nextStep: ProductCopy.emptyStateNextStep(for: .dashboard))
+        if diagnosticFailureMessage == nil && appState.outdatedPackages.isEmpty && !appState.isEverythingBusy {
+            Group {
+                if appState.outdatedSnapshotProvenance.isAuthoritativeSuccess {
+                    EmptyView(title: Self.dashboardEmptyTitle(), nextStep: ProductCopy.emptyStateNextStep(for: .dashboard))
+                } else {
+                    Label("尚未取得更新检查结果，请先检查更新。", systemImage: "questionmark.circle")
+                }
+            }
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 24)
@@ -2017,6 +2069,9 @@ struct BrewOperationSummaryView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                if summary.status == .failed, let issue = summary.reliabilityIssue {
+                    Text(issue.title).font(.headline).foregroundStyle(.red)
+                }
                 Text(summary.compactRecapText)
                     .font(.caption)
                     .foregroundStyle(.primary)
@@ -2058,9 +2113,9 @@ struct BrewOperationSummaryView: View {
                 }
                 if let next = summary.recommendedNextAction, detailsVisible {
                     Text(next)
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 12)

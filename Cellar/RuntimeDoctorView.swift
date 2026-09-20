@@ -20,6 +20,12 @@ struct RuntimeDoctorView: View {
                             availableWidth: contentWidth,
                             selectRuntime: model.selectRuntime(_:))
                     }
+                    if let failure = model.scanFailureMessage {
+                        DiagnosticFailureView(message: failure)
+                        if !model.dashboardSnapshots.isEmpty {
+                            Text("以下为上次成功扫描的结果，不能代表当前环境。").foregroundStyle(.orange)
+                        }
+                    }
                     if let snapshot = model.snapshot {
                         RuntimeDecisionPanel(snapshot: snapshot, model: model)
                         RuntimeOverviewGrid(snapshot: snapshot, availableWidth: contentWidth)
@@ -36,10 +42,10 @@ struct RuntimeDoctorView: View {
                     } else if model.isLoading {
                         ProgressView("正在整理 Runtime Doctor 快照...")
                             .frame(maxWidth: .infinity, minHeight: 320)
-                    } else if let errorMessage = model.errorMessage {
+                    } else if let errorMessage = model.errorMessage, model.scanFailureMessage == nil {
                         ErrorView(msg: errorMessage, nextStep: "下一步：刷新 Runtime Doctor；如仍失败，请导出报告或查看高级日志。")
                             .frame(maxWidth: .infinity, minHeight: 320)
-                    } else {
+                    } else if model.scanFailureMessage == nil {
                         EmptyView(title: "还没有 Runtime Doctor 快照", nextStep: ProductCopy.emptyStateNextStep(for: .runtime))
                             .frame(maxWidth: .infinity, minHeight: 320)
                     }

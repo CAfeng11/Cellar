@@ -9,6 +9,12 @@ final class RuntimeDoctorViewModel: ObservableObject {
     @Published var snapshot: RuntimeSnapshot?
     @Published private(set) var snapshotsByKind: [RuntimeKind: RuntimeSnapshot] = [:]
     @Published var isLoading = false
+    @Published private(set) var scanFailureMessage: String?
+    var dashboardScanState: RuntimeScanState {
+        if isLoading { return .scanning }
+        if let scanFailureMessage { return .failed(scanFailureMessage) }
+        return snapshotsByKind.isEmpty ? .notChecked : .succeeded
+    }
     @Published var errorMessage: String?
     @Published var actionMessage: String?
     @Published var latestRuntimeEvent: RuntimeDiagnosticEvent?
@@ -60,6 +66,7 @@ final class RuntimeDoctorViewModel: ObservableObject {
     ) async {
         do {
             let newSnapshots = try await self.inspectAllRuntimes()
+            self.scanFailureMessage = nil
             self.snapshotsByKind = newSnapshots
             let kind = previousSnapshot?.kind ?? self.currentRuntime
             self.snapshot = newSnapshots[kind] ?? newSnapshots[self.currentRuntime]
@@ -92,6 +99,7 @@ final class RuntimeDoctorViewModel: ObservableObject {
             )
             self.log("运行时验证结果：\(status.displayName)", type: status == .passed ? .success : .info)
         } catch {
+            self.scanFailureMessage = error.localizedDescription
             self.errorMessage = "动作后验证失败: \(error.localizedDescription)"
             let kind = previousSnapshot?.kind ?? self.currentRuntime
             let detail = "动作已执行，但重新扫描失败：\(error.localizedDescription)"
@@ -178,11 +186,13 @@ final class RuntimeDoctorViewModel: ObservableObject {
         Task {
             do {
                 let newSnapshots = try await self.inspectAllRuntimes()
+                self.scanFailureMessage = nil
                 self.snapshotsByKind = newSnapshots
                 self.snapshot = newSnapshots[self.currentRuntime]
                 self.actionMessage = "诊断快照已更新"
                 self.log("运行时扫描完成：Node / Python 总览已同步", type: .success)
             } catch {
+                self.scanFailureMessage = error.localizedDescription
                 self.errorMessage = error.localizedDescription
                 self.log("运行时扫描失败: \(error.localizedDescription)", type: .failure, reveal: true)
             }
