@@ -50,6 +50,41 @@ struct BrewAffectedPackage: Identifiable, Codable, Hashable, Sendable {
     var sizeStatus: String { sizeEstimate.statusText }
 }
 
+enum BrewPackageVerificationStatus: String, Codable, Hashable, Sendable {
+    case completed
+    case stillOutdated
+    case verificationFailed
+    case notExecuted
+    case timedOut
+    case commandFailed
+    case unknown
+
+    var displayName: String {
+        switch self {
+        case .completed: return "已完成"
+        case .stillOutdated: return "仍 outdated"
+        case .verificationFailed: return "复核失败"
+        case .notExecuted: return "未执行"
+        case .timedOut: return "被超时终止"
+        case .commandFailed: return "命令失败"
+        case .unknown: return "状态未知"
+        }
+    }
+}
+
+struct BrewPackageVerificationResult: Identifiable, Codable, Hashable, Sendable {
+    let packageID: String
+    let name: String
+    let status: BrewPackageVerificationStatus
+    let detail: String
+
+    var id: String { packageID }
+
+    var displayText: String {
+        "\(name)：\(status.displayName)\(detail.isEmpty ? "" : "（\(detail)）")"
+    }
+}
+
 enum BrewOperationStage: String, Codable, Hashable, Sendable {
     case preparingUpgrade
     case upgradingPackage
@@ -128,6 +163,7 @@ struct BrewOperationSummary: Identifiable, Codable, Hashable, Sendable {
     let recommendedNextAction: String?
     let reliabilityIssue: BrewReliabilityIssue?
     let progress: BrewOperationProgress?
+    let packageVerificationResults: [BrewPackageVerificationResult]
 
     init(
         id: UUID = UUID(),
@@ -139,7 +175,8 @@ struct BrewOperationSummary: Identifiable, Codable, Hashable, Sendable {
         summaryText: String,
         recommendedNextAction: String?,
         reliabilityIssue: BrewReliabilityIssue? = nil,
-        progress: BrewOperationProgress? = nil
+        progress: BrewOperationProgress? = nil,
+        packageVerificationResults: [BrewPackageVerificationResult] = []
     ) {
         self.id = id
         self.operationKind = operationKind
@@ -151,6 +188,7 @@ struct BrewOperationSummary: Identifiable, Codable, Hashable, Sendable {
         self.recommendedNextAction = recommendedNextAction
         self.reliabilityIssue = reliabilityIssue
         self.progress = progress
+        self.packageVerificationResults = packageVerificationResults
     }
 
     var compactRecapText: String {

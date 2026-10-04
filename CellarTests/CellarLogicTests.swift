@@ -629,6 +629,443 @@ final class CellarLogicTests: XCTestCase {
         XCTAssertTrue(summary.recommendedNextAction?.contains("Homebrew 输出跳过") ?? false)
     }
 
+    func testUpgradeSummaryListsPerPackageVerificationResults() {
+        let done = makePackage(name: "node", installedVersion: "1.0", currentVersion: "1.1")
+        let still = makePackage(name: "pandoc", installedVersion: "3.11", currentVersion: "3.12")
+
+        let summary = BrewOperationPlanner.upgradeFinished(
+            startedAt: Date(),
+            targetPackages: [done, still],
+            remainingOutdatedPackages: [still]
+        )
+
+        XCTAssertEqual(summary.packageVerificationResults.map(\.status), [.completed, .stillOutdated])
+        XCTAssertTrue(summary.summaryText.contains("node：已完成"))
+        XCTAssertTrue(summary.summaryText.contains("pandoc：仍 outdated"))
+    }
+
+    func testUpgradeFailureSummaryMarksAttemptedTimedOutAndUnexecutedPackages() {
+        let attempted = makePackage(name: "pandoc", installedVersion: "3.11", currentVersion: "3.12")
+        let notExecuted = makePackage(name: "mlx", installedVersion: "0.32.1", currentVersion: "0.32.3")
+        let error = BrewError.timedOut(command: "brew upgrade pandoc；下载证据：无输出且 .incomplete 字节无增长", seconds: 180)
+
+        let summary = BrewOperationPlanner.upgradeFailureSummary(
+            startedAt: Date(),
+            targetPackages: [attempted, notExecuted],
+            attemptedPackageIDs: [attempted.id],
+            failedPackageIDs: [attempted.id],
+            error: error
+        )
+
+        XCTAssertEqual(summary.packageVerificationResults.map(\.status), [.timedOut, .notExecuted])
+        XCTAssertTrue(summary.summaryText.contains("pandoc：被超时终止"))
+        XCTAssertTrue(summary.summaryText.contains("mlx：未执行"))
+    }
+
+    func testUpgradeFailureSummaryKeepsCompletedGroupWhenLaterGroupTimesOut() {
+        let completed = makePackage(name: "node", installedVersion: "1.0", currentVersion: "1.1")
+        let failed = makePackage(name: "pandoc", installedVersion: "3.11", currentVersion: "3.12")
+        let notExecuted = makePackage(name: "mlx", installedVersion: "0.32.1", currentVersion: "0.32.3")
+        let error = BrewError.timedOut(command: "brew upgrade pandoc", seconds: 180)
+
+        let summary = BrewOperationPlanner.upgradeFailureSummary(
+            startedAt: Date(),
+            targetPackages: [completed, failed, notExecuted],
+            attemptedPackageIDs: [completed.id, failed.id],
+            completedPackageIDs: [completed.id],
+            failedPackageIDs: [failed.id],
+            remainingOutdatedPackages: [failed, notExecuted],
+            error: error
+        )
+
+        XCTAssertEqual(summary.packageVerificationResults.map(\.status), [.completed, .timedOut, .notExecuted])
+        XCTAssertTrue(summary.summaryText.contains("node：已完成"))
+        XCTAssertTrue(summary.summaryText.contains("pandoc：被超时终止"))
+        XCTAssertTrue(summary.summaryText.contains("mlx：未执行"))
+    }
+
+    func testUpgradeFailureSummaryUsesUnknownWhenCompletedGroupCannotBeVerified() {
+        let completed = makePackage(name: "node", installedVersion: "1.0", currentVersion: "1.1")
+        let failed = makePackage(name: "pandoc", installedVersion: "3.11", currentVersion: "3.12")
+        let error = BrewError.executionFailed(code: 1, message: "network failed")
+        let verificationError = BrewError.executionFailed(code: 1, message: "outdated check failed")
+
+        let summary = BrewOperationPlanner.upgradeFailureSummary(
+            startedAt: Date(),
+            targetPackages: [completed, failed],
+            attemptedPackageIDs: [completed.id, failed.id],
+            completedPackageIDs: [completed.id],
+            failedPackageIDs: [failed.id],
+            verificationError: verificationError,
+            error: error
+        )
+
+        XCTAssertEqual(summary.packageVerificationResults.map(\.status), [.unknown, .commandFailed])
+        XCTAssertTrue(summary.summaryText.contains("命令失败"))
+        XCTAssertTrue(summary.summaryText.contains("失败后复核失败"))
+    }
+
+    func testDownloadIdleTimeoutStartsSamplingBeforeIdleThreshold() {
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.initialTimerDelay(idleTimeoutSeconds: 180, hasDownloadMonitor: true),
+            HomebrewStreamIdleTimeoutPolicy.downloadSamplingInterval
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.initialTimerDelay(idleTimeoutSeconds: 180, hasDownloadMonitor: false),
+            180
+        )
+        var state = HomebrewStreamIdleTimeoutState()
+        let now = Date(timeIntervalSince1970: 1_000)
+        let trustedSample = HomebrewDownloadEvidenceSample(trustedDiscovery: true, trustedByteGrowth: false, uncertainActivity: false, message: nil)
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 180,
+                timeoutSeconds: 180,
+                sample: trustedSample,
+                now: now,
+                state: &state
+            ),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 196,
+                timeoutSeconds: 180,
+                sample: nil,
+                now: now.addingTimeInterval(16),
+                state: &state
+            ),
+            .terminate
+        )
+    }
+
+    func testDownloadIdleTimeoutGivesBoundaryTargetFileObservationWindow() {
+        var state = HomebrewStreamIdleTimeoutState()
+        let now = Date(timeIntervalSince1970: 2_000)
+        let newTargetFile = HomebrewDownloadEvidenceSample(trustedDiscovery: true, trustedByteGrowth: false, uncertainActivity: false, message: "发现 pandoc.incomplete")
+
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 180,
+                timeoutSeconds: 180,
+                sample: newTargetFile,
+                now: now,
+                state: &state
+            ),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 190,
+                timeoutSeconds: 180,
+                sample: nil,
+                now: now.addingTimeInterval(10),
+                state: &state
+            ),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 196,
+                timeoutSeconds: 180,
+                sample: nil,
+                now: now.addingTimeInterval(16),
+                state: &state
+            ),
+            .terminate
+        )
+    }
+
+    func testDownloadIdleTimeoutDoesNotLetUnscopedGrowthExtendForever() {
+        var state = HomebrewStreamIdleTimeoutState()
+        let now = Date(timeIntervalSince1970: 3_000)
+        let unscoped = HomebrewDownloadEvidenceSample(trustedDiscovery: false, trustedByteGrowth: false, uncertainActivity: true, message: "发现 dependency.incomplete")
+
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 180,
+                timeoutSeconds: 180,
+                sample: unscoped,
+                now: now,
+                state: &state
+            ),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 190,
+                timeoutSeconds: 180,
+                sample: nil,
+                now: now.addingTimeInterval(10),
+                state: &state
+            ),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 196,
+                timeoutSeconds: 180,
+                sample: unscoped,
+                now: now.addingTimeInterval(16),
+                state: &state
+            ),
+            .terminate
+        )
+    }
+
+    func testDownloadIdleTimeoutExtendsWhenBoundaryTargetFileGrows() {
+        var state = HomebrewStreamIdleTimeoutState()
+        let now = Date(timeIntervalSince1970: 4_000)
+        let trusted = HomebrewDownloadEvidenceSample(trustedDiscovery: false, trustedByteGrowth: true, uncertainActivity: false, message: nil)
+
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 180, timeoutSeconds: 180, sample: trusted, now: now, state: &state),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 196, timeoutSeconds: 180, sample: trusted, now: now.addingTimeInterval(16), state: &state),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 210, timeoutSeconds: 180, sample: nil, now: now.addingTimeInterval(30), state: &state),
+            .continueWaiting
+        )
+    }
+
+    func testTrustedByteGrowthResetsFullIdleWindow() {
+        var state = HomebrewStreamIdleTimeoutState()
+        let outputAtZero = Date(timeIntervalSince1970: 5_000)
+        let growthAt300 = outputAtZero.addingTimeInterval(300)
+        let growth = HomebrewDownloadEvidenceSample(trustedDiscovery: false, trustedByteGrowth: true, uncertainActivity: false, message: nil)
+
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 300,
+                timeoutSeconds: 180,
+                sample: growth,
+                now: growthAt300,
+                state: &state
+            ),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 315,
+                timeoutSeconds: 180,
+                sample: nil,
+                now: outputAtZero.addingTimeInterval(315),
+                state: &state
+            ),
+            .continueWaiting
+        )
+        XCTAssertEqual(
+            HomebrewStreamIdleTimeoutPolicy.decision(
+                idleSeconds: 480,
+                timeoutSeconds: 180,
+                sample: nil,
+                now: outputAtZero.addingTimeInterval(480),
+                state: &state
+            ),
+            .terminate
+        )
+    }
+
+    func testContinuousTrustedByteGrowthKeepsWaiting() {
+        var state = HomebrewStreamIdleTimeoutState()
+        let outputAtZero = Date(timeIntervalSince1970: 6_000)
+        let growth = HomebrewDownloadEvidenceSample(trustedDiscovery: false, trustedByteGrowth: true, uncertainActivity: false, message: nil)
+
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 200, timeoutSeconds: 180, sample: growth, now: outputAtZero.addingTimeInterval(200), state: &state), .continueWaiting)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 360, timeoutSeconds: 180, sample: growth, now: outputAtZero.addingTimeInterval(360), state: &state), .continueWaiting)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 530, timeoutSeconds: 180, sample: nil, now: outputAtZero.addingTimeInterval(530), state: &state), .continueWaiting)
+    }
+
+    func testRepeatedDiscoveryWithoutByteGrowthEventuallyTerminates() {
+        var state = HomebrewStreamIdleTimeoutState()
+        let now = Date(timeIntervalSince1970: 7_000)
+        let discovery = HomebrewDownloadEvidenceSample(trustedDiscovery: true, trustedByteGrowth: false, uncertainActivity: false, message: nil)
+
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 180, timeoutSeconds: 180, sample: discovery, now: now, state: &state), .continueWaiting)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 196, timeoutSeconds: 180, sample: discovery, now: now.addingTimeInterval(16), state: &state), .terminate)
+    }
+
+    func testDownloadEvidenceMonitorTreatsGrowingIncompleteAsProgress() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-evidence-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let incomplete = root.appendingPathComponent("pandoc--archive.tar.gz.incomplete")
+        try Data(repeating: 1, count: 4).write(to: incomplete)
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["pandoc"])
+
+        XCTAssertEqual(monitor.sample().message?.contains(".incomplete"), true)
+        try Data(repeating: 1, count: 12).write(to: incomplete)
+        let growth = monitor.sample()
+
+        XCTAssertTrue(growth.grew)
+        XCTAssertTrue(monitor.summary().didGrow)
+        XCTAssertTrue(monitor.summary().detailText.contains("检测到 .incomplete 字节增长"))
+    }
+
+    func testDownloadEvidenceMonitorObservesFileCreatedAfterInitialMiss() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-late-file-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["pandoc"])
+
+        XCTAssertNil(monitor.sample().message)
+        let incomplete = root.appendingPathComponent("pandoc--archive.tar.gz.incomplete")
+        try Data(repeating: 1, count: 4).write(to: incomplete)
+        let firstObserved = monitor.sample()
+        XCTAssertEqual(firstObserved.message?.contains("发现"), true)
+        XCTAssertTrue(firstObserved.grew)
+        try Data(repeating: 1, count: 12).write(to: incomplete)
+        XCTAssertTrue(monitor.sample().grew)
+        XCTAssertTrue(monitor.summary().didGrow)
+        XCTAssertFalse(monitor.summary().detailText.contains("未找到相关"))
+    }
+
+    func testDownloadEvidenceMonitorExplainsNoGrowthStall() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-stall-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let incomplete = root.appendingPathComponent("ollama--archive.tar.gz.incomplete")
+        try Data(repeating: 1, count: 8).write(to: incomplete)
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["ollama"])
+
+        _ = monitor.sample()
+        _ = monitor.sample()
+        let summary = monitor.summary()
+
+        XCTAssertFalse(summary.didGrow)
+        XCTAssertTrue(summary.detailText.contains("未检测到 .incomplete 字节增长"))
+    }
+
+    func testDownloadEvidenceMonitorUsesInheritedHomebrewCacheEnvironment() {
+        let environment = HomebrewDownloadEvidenceMonitor.effectiveEnvironment(overrides: ["HOMEBREW_CACHE": ""])
+
+        XCTAssertNil(environment["HOMEBREW_CACHE"])
+
+        let overridden = HomebrewDownloadEvidenceMonitor.effectiveEnvironment(overrides: ["HOMEBREW_CACHE": "/tmp/custom-homebrew-cache"])
+        XCTAssertEqual(overridden["HOMEBREW_CACHE"], "/tmp/custom-homebrew-cache")
+        XCTAssertTrue(HomebrewDownloadEvidenceMonitor.defaultDownloadDirectories(environment: overridden).contains("/tmp/custom-homebrew-cache"))
+    }
+
+    func testDownloadEvidenceMonitorTracksDependencyAndTapTargets() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-dependency-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let monitor = HomebrewDownloadEvidenceMonitor(
+            directories: [root.path],
+            targetTokens: ["homebrew/core/pandoc"],
+            startedAt: Date()
+        )
+        let dependency = root.appendingPathComponent("unicode-collation--dependency.tar.gz.incomplete")
+        try Data(repeating: 1, count: 7).write(to: dependency)
+
+        let sample = monitor.sample()
+        XCTAssertEqual(sample.message?.contains("unicode-collation"), true)
+        XCTAssertFalse(sample.grew)
+        XCTAssertEqual(monitor.knownFileEvidence().count, 1)
+        XCTAssertTrue(monitor.summary().detailText.contains("依赖或间接下载线索"))
+    }
+
+    func testDownloadEvidenceMonitorDeduplicatesParentAndDownloadsDirectory() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-dedup-\(UUID().uuidString)")
+        let downloads = root.appendingPathComponent("downloads")
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let incomplete = downloads.appendingPathComponent("pandoc--archive.tar.gz.incomplete")
+        try Data(repeating: 1, count: 5).write(to: incomplete)
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path, downloads.path], targetTokens: ["pandoc"])
+
+        _ = monitor.sample()
+
+        XCTAssertEqual(monitor.knownFileEvidence().count, 1)
+        XCTAssertEqual(monitor.summary().initialBytes, 5)
+    }
+
+    func testDownloadEvidenceMonitorDistinguishesCompletedFileFromRestart() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-complete-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let completed = root.appendingPathComponent("pandoc--archive.tar.gz.incomplete")
+        let growing = root.appendingPathComponent("pandoc--dependency.tar.gz.incomplete")
+        try Data(repeating: 1, count: 8).write(to: completed)
+        try Data(repeating: 1, count: 4).write(to: growing)
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["pandoc"])
+
+        _ = monitor.sample()
+        try FileManager.default.removeItem(at: completed)
+        try Data(repeating: 1, count: 12).write(to: growing)
+        let sample = monitor.sample()
+        let summary = monitor.summary()
+
+        XCTAssertTrue(sample.grew)
+        XCTAssertTrue(summary.didGrow)
+        XCTAssertFalse(summary.suspectedRestartOrOverwrite)
+        XCTAssertTrue(summary.detailText.contains("已完成、移走或不再可见"))
+    }
+
+    func testDownloadEvidenceMonitorTreatsReappearedTargetFileAsNewObservation() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-reappear-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let incomplete = root.appendingPathComponent("pandoc--archive.tar.gz.incomplete")
+        try Data(repeating: 1, count: 8).write(to: incomplete)
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["pandoc"])
+
+        _ = monitor.sample()
+        try FileManager.default.removeItem(at: incomplete)
+        _ = monitor.sample()
+        try Data(repeating: 1, count: 8).write(to: incomplete)
+        let reappeared = monitor.sample()
+
+        XCTAssertTrue(reappeared.grew)
+        XCTAssertTrue(reappeared.message?.contains("重新发现") ?? false)
+    }
+
+    func testDownloadEvidenceMonitorMarksTruncatedFileAsSuspectedRestart() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("cellar-download-truncate-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let incomplete = root.appendingPathComponent("pandoc--archive.tar.gz.incomplete")
+        try Data(repeating: 1, count: 20).write(to: incomplete)
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["pandoc"])
+
+        _ = monitor.sample()
+        try Data(repeating: 1, count: 4).write(to: incomplete)
+        _ = monitor.sample()
+
+        XCTAssertTrue(monitor.summary().suspectedRestartOrOverwrite)
+        XCTAssertTrue(monitor.summary().detailText.contains("疑似重下或覆盖"))
+    }
+
+    func testDownloadEvidenceParserClassifiesRangeAndFullDownloadSignals() {
+        XCTAssertEqual(HomebrewDownloadEvidenceParser.transferEvidence(from: "HTTP/2 206 Partial Content"), .rangeResume)
+        XCTAssertEqual(HomebrewDownloadEvidenceParser.transferEvidence(from: "Content-Range: bytes 10-20/40"), .rangeResume)
+        XCTAssertEqual(HomebrewDownloadEvidenceParser.transferEvidence(from: "HTTP/2 200 OK"), .fullDownload)
+        XCTAssertEqual(HomebrewDownloadEvidenceParser.transferEvidence(from: "plain Homebrew output"), .unknown)
+    }
+
+    func testHomebrewExplicitProxyStateUsesHonestWording() {
+        let disabled = HomebrewExplicitProxyState.make(environment: [:])
+        XCTAssertTrue(disabled.logLine.contains("未注入 Cellar 显式代理"))
+        XCTAssertTrue(disabled.logLine.contains("实际代理节点未知"))
+        XCTAssertFalse(disabled.logLine.contains("直连"))
+
+        let enabled = HomebrewExplicitProxyState.make(environment: ["ALL_PROXY": "socks5://127.0.0.1:7897"])
+        XCTAssertTrue(enabled.logLine.contains("socks5 127.0.0.1:7897"))
+        XCTAssertTrue(enabled.logLine.contains("实际出口节点未知"))
+    }
+
     func testPackageSizeEstimateExplainsUnknownUpgradeSize() {
         let unknownPackage = makePackage(name: "git", installedVersion: "2.0", currentVersion: "2.1")
         let knownPackage = makePackage(

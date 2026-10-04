@@ -1150,6 +1150,535 @@ enum BrewError: LocalizedError, Equatable {
     }
 }
 
+extension BrewError {
+    var isTimedOut: Bool {
+        if case .timedOut = self { return true }
+        return false
+    }
+}
+
+struct HomebrewExplicitProxyState: Equatable, Sendable {
+    enum Mode: Equatable, Sendable {
+        case notInjected
+        case injected(protocolName: String, host: String, port: Int)
+    }
+
+    let mode: Mode
+
+    nonisolated static let notInjected = HomebrewExplicitProxyState(mode: .notInjected)
+
+    nonisolated static func make(environment: [String: String]) -> HomebrewExplicitProxyState {
+        let values = [
+            environment["HTTPS_PROXY"],
+            environment["HTTP_PROXY"],
+            environment["ALL_PROXY"],
+            environment["https_proxy"],
+            environment["http_proxy"],
+            environment["all_proxy"]
+        ].compactMap { $0?.nilIfBlank }
+
+        guard let value = values.first,
+              let components = URLComponents(string: value),
+              let scheme = components.scheme,
+              let host = components.host else {
+            return .notInjected
+        }
+        let port = components.port ?? (scheme.lowercased().hasPrefix("socks") ? 1080 : 80)
+        return HomebrewExplicitProxyState(mode: .injected(protocolName: scheme, host: host, port: port))
+    }
+
+    nonisolated var logLine: String {
+        switch mode {
+        case .notInjected:
+            return "Cellar 显式代理：未注入 Cellar 显式代理；实际代理节点未知，仍可能受系统代理、TUN 或透明代理影响。"
+        case .injected(let protocolName, let host, let port):
+            return "Cellar 显式代理：已注入 \(protocolName) \(host):\(port)；实际出口节点未知。"
+        }
+    }
+}
+
+enum HomebrewDownloadTransferEvidence: Equatable, Sendable {
+    case rangeResume
+    case fullDownload
+    case unknown
+
+    nonisolated var displayName: String {
+        switch self {
+        case .rangeResume: return "检测到 Range/206 续传线索"
+        case .fullDownload: return "检测到非 Range / 可能重新下载线索"
+        case .unknown: return "未检测到稳定 Range 线索"
+        }
+    }
+}
+
+struct HomebrewDownloadEvidenceSummary: Equatable, Sendable {
+    let initialBytes: Int64?
+    let finalBytes: Int64?
+    let didGrow: Bool
+    let suspectedRestartOrOverwrite: Bool
+    let transferEvidence: HomebrewDownloadTransferEvidence
+    let reason: String?
+
+    nonisolated var statusText: String {
+        if didGrow {
+            return "检测到 .incomplete 字节增长"
+        }
+        if suspectedRestartOrOverwrite {
+            return "疑似重下或覆盖"
+        }
+        if initialBytes == nil && finalBytes == nil {
+            return "下载进度未知"
+        }
+        return "未检测到 .incomplete 字节增长"
+    }
+
+    nonisolated var detailText: String {
+        let initial = initialBytes.map(Self.formatBytes) ?? "未知"
+        let final = finalBytes.map(Self.formatBytes) ?? "未知"
+        let finalLabel = reason?.contains("最后观测") == true || reason?.contains("不再可见") == true ? "结束/最后观测" : "结束"
+        let restart = suspectedRestartOrOverwrite ? "；曾观察到大小回落，疑似重下或覆盖" : ""
+        let reasonText = reason.map { "；\($0)" } ?? ""
+        return "\(statusText)：初始 \(initial)，\(finalLabel) \(final)；\(transferEvidence.displayName)\(restart)\(reasonText)。"
+    }
+
+    nonisolated static func unknown(reason: String) -> HomebrewDownloadEvidenceSummary {
+        HomebrewDownloadEvidenceSummary(
+            initialBytes: nil,
+            finalBytes: nil,
+            didGrow: false,
+            suspectedRestartOrOverwrite: false,
+            transferEvidence: .unknown,
+            reason: reason
+        )
+    }
+
+    nonisolated private static func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+enum HomebrewDownloadEvidenceParser {
+    nonisolated static func transferEvidence(from text: String) -> HomebrewDownloadTransferEvidence {
+        let lower = text.lowercased()
+        if lower.contains("http/") && lower.contains(" 206") { return .rangeResume }
+        if lower.contains("content-range") || lower.contains("accept-ranges") || lower.contains("range: bytes") { return .rangeResume }
+        if lower.contains("http/") && lower.contains(" 200") { return .fullDownload }
+        if lower.contains("cannot resume") || lower.contains("ignoring range") || lower.contains("does not support range") { return .fullDownload }
+        return .unknown
+    }
+}
+
+struct HomebrewDownloadEvidenceSample: Equatable, Sendable {
+    let trustedDiscovery: Bool
+    let trustedByteGrowth: Bool
+    let uncertainActivity: Bool
+    let message: String?
+
+    var grew: Bool { trustedDiscovery || trustedByteGrowth }
+}
+
+struct HomebrewStreamIdleTimeoutState: Equatable, Sendable {
+    var trustedDiscoveryGraceUntil: Date?
+    var trustedDiscoveryDeferralCount = 0
+    var lastTrustedProgressAt: Date?
+    var unscopedGraceUntil: Date?
+    var unscopedDeferralCount = 0
+}
+
+enum HomebrewStreamIdleTimeoutDecision: Equatable, Sendable {
+    case continueWaiting
+    case terminate
+}
+
+final class HomebrewStreamIdleTimeoutCoordinator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = HomebrewStreamIdleTimeoutState()
+
+    func shouldTerminate(
+        idleSeconds: TimeInterval,
+        timeoutSeconds: TimeInterval,
+        sample: HomebrewDownloadEvidenceSample?,
+        now: Date = Date()
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return HomebrewStreamIdleTimeoutPolicy.decision(
+            idleSeconds: idleSeconds,
+            timeoutSeconds: timeoutSeconds,
+            sample: sample,
+            now: now,
+            state: &state
+        ) == .terminate
+    }
+}
+
+enum HomebrewStreamIdleTimeoutPolicy {
+    nonisolated static let downloadSamplingInterval: TimeInterval = 5
+    nonisolated static let trustedDiscoveryObservationWindow: TimeInterval = 15
+    nonisolated static let maxTrustedDiscoveryObservationDeferrals = 1
+    nonisolated static let unscopedObservationWindow: TimeInterval = 15
+    nonisolated static let maxUnscopedObservationDeferrals = 1
+
+    nonisolated static func initialTimerDelay(idleTimeoutSeconds: TimeInterval, hasDownloadMonitor: Bool) -> TimeInterval {
+        guard hasDownloadMonitor else { return idleTimeoutSeconds }
+        return min(downloadSamplingInterval, idleTimeoutSeconds)
+    }
+
+    nonisolated static func decision(
+        idleSeconds: TimeInterval,
+        timeoutSeconds: TimeInterval,
+        sample: HomebrewDownloadEvidenceSample?,
+        now: Date,
+        state: inout HomebrewStreamIdleTimeoutState
+    ) -> HomebrewStreamIdleTimeoutDecision {
+        if let sample {
+            if sample.trustedByteGrowth {
+                state.lastTrustedProgressAt = now
+                return .continueWaiting
+            }
+            if sample.trustedDiscovery && state.trustedDiscoveryDeferralCount < maxTrustedDiscoveryObservationDeferrals {
+                state.trustedDiscoveryDeferralCount += 1
+                state.trustedDiscoveryGraceUntil = now.addingTimeInterval(trustedDiscoveryObservationWindow)
+                return .continueWaiting
+            }
+            if sample.uncertainActivity && state.unscopedDeferralCount < maxUnscopedObservationDeferrals {
+                state.unscopedDeferralCount += 1
+                state.unscopedGraceUntil = now.addingTimeInterval(unscopedObservationWindow)
+                return .continueWaiting
+            }
+        }
+        if let trustedDiscoveryGraceUntil = state.trustedDiscoveryGraceUntil, trustedDiscoveryGraceUntil > now {
+            return .continueWaiting
+        }
+        if let unscopedGraceUntil = state.unscopedGraceUntil, unscopedGraceUntil > now {
+            return .continueWaiting
+        }
+        let effectiveIdleSeconds: TimeInterval
+        if let lastTrustedProgressAt = state.lastTrustedProgressAt {
+            effectiveIdleSeconds = min(idleSeconds, now.timeIntervalSince(lastTrustedProgressAt))
+        } else {
+            effectiveIdleSeconds = idleSeconds
+        }
+        return effectiveIdleSeconds >= timeoutSeconds ? .terminate : .continueWaiting
+    }
+}
+
+final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
+    struct FileEvidence: Equatable, Sendable {
+        let path: String
+        var initialBytes: Int64
+        var latestBytes: Int64
+        var maxBytes: Int64
+        var matchedTarget: Bool
+        var didGrow: Bool
+        var suspectedRestartOrOverwrite: Bool
+        var completedOrMoved: Bool
+        var unreadable: Bool
+    }
+
+    private struct FileSnapshot {
+        let path: String
+        let bytes: Int64
+        let matchedTarget: Bool
+    }
+
+    private let lock = NSLock()
+    private let directories: [String]
+    private let targetTokens: [String]
+    private let startedAt: Date
+    private var didSample = false
+    private var didFinalSample = false
+    private var files: [String: FileEvidence] = [:]
+    private var didGrow = false
+    private var suspectedRestartOrOverwrite = false
+    private var observedCompletedOrMoved = false
+    private var observedUnscopedOperationFile = false
+    private var transferEvidence: HomebrewDownloadTransferEvidence = .unknown
+    private var reason: String?
+
+    init(directories: [String], targetTokens: [String], startedAt: Date = Date()) {
+        self.directories = Self.normalizedScanDirectories(directories)
+        self.targetTokens = Self.normalizedTokens(targetTokens)
+        self.startedAt = startedAt
+    }
+
+    nonisolated static func defaultDownloadDirectories(environment: [String: String]) -> [String] {
+        var candidates: [String] = []
+        if let homebrewCache = environment["HOMEBREW_CACHE"]?.nilIfBlank {
+            candidates.append(homebrewCache)
+            candidates.append("\(homebrewCache)/downloads")
+        }
+        if let home = environment["HOME"]?.nilIfBlank ?? ProcessInfo.processInfo.environment["HOME"]?.nilIfBlank {
+            candidates.append("\(home)/Library/Caches/Homebrew/downloads")
+            candidates.append("\(home)/Library/Caches/Homebrew")
+        }
+        candidates.append("/Library/Caches/Homebrew/downloads")
+        candidates.append("/opt/homebrew/Library/Caches/Homebrew/downloads")
+        candidates.append("/usr/local/Homebrew/Library/Caches/Homebrew/downloads")
+        var seen = Set<String>()
+        return normalizedScanDirectories(candidates.filter { !$0.isEmpty && seen.insert($0).inserted })
+    }
+
+    nonisolated private static func normalizedScanDirectories(_ directories: [String]) -> [String] {
+        let normalized = directories
+            .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+            .filter { !$0.isEmpty }
+            .sorted { $0.count < $1.count }
+        var selected: [String] = []
+        for directory in normalized {
+            let isCoveredByParent = selected.contains { parent in
+                directory == parent || directory.hasPrefix(parent.hasSuffix("/") ? parent : "\(parent)/")
+            }
+            if !isCoveredByParent {
+                selected.append(directory)
+            }
+        }
+        return selected
+    }
+
+    nonisolated private static func normalizedTokens(_ tokens: [String]) -> [String] {
+        var result: [String] = []
+        for token in tokens {
+            let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !trimmed.isEmpty else { continue }
+            result.append(trimmed)
+            if let last = trimmed.split(separator: "/").last {
+                result.append(String(last))
+            }
+            if let base = trimmed.split(separator: "@").first {
+                result.append(String(base))
+            }
+        }
+        var seen = Set<String>()
+        return result.filter { seen.insert($0).inserted }
+    }
+
+    func observe(output text: String) {
+        let evidence = HomebrewDownloadEvidenceParser.transferEvidence(from: text)
+        guard evidence != .unknown else { return }
+        lock.lock()
+        if transferEvidence == .unknown || evidence == .rangeResume {
+            transferEvidence = evidence
+        }
+        lock.unlock()
+    }
+
+    func sample() -> HomebrewDownloadEvidenceSample {
+        let snapshots = scanIncompleteFiles()
+        lock.lock()
+        defer { lock.unlock() }
+        didSample = true
+
+        guard !snapshots.isEmpty else {
+            if !files.isEmpty {
+                for key in files.keys {
+                    files[key]?.completedOrMoved = true
+                }
+                observedCompletedOrMoved = true
+                return HomebrewDownloadEvidenceSample(
+                    trustedDiscovery: false,
+                    trustedByteGrowth: false,
+                    uncertainActivity: false,
+                    message: "下载证据：此前观测到的 .incomplete 已完成、移走或不再可见。"
+                )
+            }
+            if reason == nil {
+                reason = "未找到相关 Homebrew download cache / .incomplete 文件"
+            }
+            return HomebrewDownloadEvidenceSample(trustedDiscovery: false, trustedByteGrowth: false, uncertainActivity: false, message: nil)
+        }
+
+        reason = nil
+        var messages: [String] = []
+        var trustedDiscovery = false
+        var trustedByteGrowth = false
+        var uncertainActivity = false
+        let seenPaths = Set(snapshots.map(\.path))
+        for snapshot in snapshots {
+            if !snapshot.matchedTarget {
+                observedUnscopedOperationFile = true
+            }
+            if var evidence = files[snapshot.path] {
+                if evidence.completedOrMoved {
+                    evidence.initialBytes = snapshot.bytes
+                    evidence.latestBytes = snapshot.bytes
+                    evidence.maxBytes = snapshot.bytes
+                    evidence.matchedTarget = evidence.matchedTarget || snapshot.matchedTarget
+                    evidence.completedOrMoved = false
+                    evidence.unreadable = false
+                    if evidence.matchedTarget {
+                        trustedDiscovery = true
+                    } else {
+                        uncertainActivity = true
+                    }
+                    files[snapshot.path] = evidence
+                    messages.append("重新发现 \(URL(fileURLWithPath: snapshot.path).lastPathComponent)，大小 \(HomebrewDownloadEvidenceSummary.detailByteString(snapshot.bytes))")
+                    continue
+                }
+                let previous = evidence.latestBytes
+                evidence.completedOrMoved = false
+                evidence.unreadable = false
+                evidence.latestBytes = snapshot.bytes
+                evidence.matchedTarget = evidence.matchedTarget || snapshot.matchedTarget
+                if snapshot.bytes > previous {
+                    evidence.didGrow = true
+                    evidence.maxBytes = max(evidence.maxBytes, snapshot.bytes)
+                    didGrow = true
+                    if evidence.matchedTarget {
+                        trustedByteGrowth = true
+                    } else {
+                        uncertainActivity = true
+                    }
+                    messages.append("\(URL(fileURLWithPath: snapshot.path).lastPathComponent) 从 \(HomebrewDownloadEvidenceSummary.detailByteString(previous)) 增长到 \(HomebrewDownloadEvidenceSummary.detailByteString(snapshot.bytes))")
+                } else if snapshot.bytes < previous {
+                    evidence.suspectedRestartOrOverwrite = true
+                    evidence.maxBytes = max(evidence.maxBytes, previous)
+                    suspectedRestartOrOverwrite = true
+                    messages.append("\(URL(fileURLWithPath: snapshot.path).lastPathComponent) 从 \(HomebrewDownloadEvidenceSummary.detailByteString(previous)) 回落到 \(HomebrewDownloadEvidenceSummary.detailByteString(snapshot.bytes))，疑似截断、重下或覆盖")
+                }
+                files[snapshot.path] = evidence
+            } else {
+                files[snapshot.path] = FileEvidence(
+                    path: snapshot.path,
+                    initialBytes: snapshot.bytes,
+                    latestBytes: snapshot.bytes,
+                    maxBytes: snapshot.bytes,
+                    matchedTarget: snapshot.matchedTarget,
+                    didGrow: false,
+                    suspectedRestartOrOverwrite: false,
+                    completedOrMoved: false,
+                    unreadable: false
+                )
+                if snapshot.matchedTarget {
+                    trustedDiscovery = true
+                } else {
+                    uncertainActivity = true
+                }
+                messages.append("发现 \(URL(fileURLWithPath: snapshot.path).lastPathComponent)，大小 \(HomebrewDownloadEvidenceSummary.detailByteString(snapshot.bytes))")
+            }
+        }
+
+        for key in files.keys where !seenPaths.contains(key) {
+            if files[key]?.completedOrMoved == false {
+                files[key]?.completedOrMoved = true
+                observedCompletedOrMoved = true
+                messages.append("\(URL(fileURLWithPath: key).lastPathComponent) 已完成、移走或不再可见")
+            }
+        }
+
+        if messages.isEmpty {
+            return HomebrewDownloadEvidenceSample(trustedDiscovery: false, trustedByteGrowth: false, uncertainActivity: false, message: nil)
+        }
+        return HomebrewDownloadEvidenceSample(
+            trustedDiscovery: trustedDiscovery,
+            trustedByteGrowth: trustedByteGrowth,
+            uncertainActivity: uncertainActivity,
+            message: "下载证据：\(messages.prefix(4).joined(separator: "；"))。"
+        )
+    }
+
+    func finalSample() {
+        _ = sample()
+        lock.lock()
+        didFinalSample = true
+        lock.unlock()
+    }
+
+    func knownFileEvidence() -> [FileEvidence] {
+        lock.lock()
+        defer { lock.unlock() }
+        return files.values.sorted { $0.path < $1.path }
+    }
+
+    nonisolated static func effectiveEnvironment(overrides: [String: String]) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        for (key, value) in overrides {
+            if value.isEmpty {
+                environment.removeValue(forKey: key)
+            } else {
+                environment[key] = value
+            }
+        }
+        return environment
+    }
+
+    func summary() -> HomebrewDownloadEvidenceSummary {
+        lock.lock()
+        defer { lock.unlock() }
+        let missingReason: String?
+        if !didSample {
+            missingReason = "未执行下载证据采样"
+        } else {
+            var reasons: [String] = []
+            if let reason { reasons.append(reason) }
+            if observedUnscopedOperationFile {
+                reasons.append("部分 .incomplete 未命中 CLI 目标名，按本次操作期间新近变更的下载文件作为依赖或间接下载线索观察")
+            }
+            if observedCompletedOrMoved {
+                reasons.append("部分 .incomplete 已完成、移走或不再可见")
+            }
+            if !didFinalSample {
+                reasons.append("结束体量为最后一次观测值，非终止瞬间重采样")
+            }
+            missingReason = reasons.isEmpty ? nil : reasons.joined(separator: "；")
+        }
+        let evidenceValues = Array(files.values)
+        return HomebrewDownloadEvidenceSummary(
+            initialBytes: evidenceValues.isEmpty ? nil : evidenceValues.reduce(Int64(0)) { $0 + $1.initialBytes },
+            finalBytes: evidenceValues.isEmpty ? nil : evidenceValues.reduce(Int64(0)) { $0 + $1.latestBytes },
+            didGrow: didGrow,
+            suspectedRestartOrOverwrite: suspectedRestartOrOverwrite,
+            transferEvidence: transferEvidence,
+            reason: missingReason
+        )
+    }
+
+    func timeoutDetail() -> String {
+        summary().detailText
+    }
+
+    private func scanIncompleteFiles() -> [FileSnapshot] {
+        var snapshots: [String: FileSnapshot] = [:]
+        for directory in directories {
+            guard let enumerator = FileManager.default.enumerator(atPath: directory) else { continue }
+            for case let relativePath as String in enumerator {
+                let lower = relativePath.lowercased()
+                guard lower.contains(".incomplete") else { continue }
+                let path = URL(fileURLWithPath: directory).appendingPathComponent(relativePath).standardizedFileURL.path
+                let matchedTarget = targetTokens.isEmpty || targetTokens.contains(where: { lower.contains($0) })
+                if !matchedTarget && !isLikelyCurrentOperationFile(at: path) {
+                    continue
+                }
+                guard let size = Self.fileSize(at: path) else { continue }
+                snapshots[path] = FileSnapshot(path: path, bytes: size, matchedTarget: matchedTarget)
+            }
+        }
+        return snapshots.values.sorted { $0.path < $1.path }
+    }
+
+    private func isLikelyCurrentOperationFile(at path: String) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let modifiedAt = attributes[.modificationDate] as? Date else {
+            return false
+        }
+        return modifiedAt >= startedAt.addingTimeInterval(-5)
+    }
+
+    private static func fileSize(at path: String) -> Int64? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+        if let size = attributes[.size] as? NSNumber {
+            return size.int64Value
+        }
+        return nil
+    }
+}
+
+private extension HomebrewDownloadEvidenceSummary {
+    nonisolated static func detailByteString(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
 // MARK: - 2. COMMAND SPEC
 
 enum BrewCommand: Sendable {
@@ -1274,7 +1803,12 @@ private final class StreamContext: @unchecked Sendable {
     func markCancelled() { lock.lock(); defer { lock.unlock() }; cancelled = true }
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
     func markOutput() { lock.lock(); defer { lock.unlock() }; lastOutputAt = Date() }
+    func markProgressEvidence() { lock.lock(); defer { lock.unlock() }; lastOutputAt = Date() }
     func markFinished() { lock.lock(); defer { lock.unlock() }; finished = true }
+    func idleSeconds(now: Date = Date()) -> TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return now.timeIntervalSince(lastOutputAt)
+    }
     func shouldTimeOut(after seconds: TimeInterval) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard !cancelled, !finished, timeoutCommand == nil else { return false }
@@ -1431,7 +1965,15 @@ struct ShellService {
         }, onCancel: { container.cancel() })
     }
 
-    static func stream(executable: String, args: [String], environment: [String: String]? = nil, idleTimeoutSeconds: TimeInterval? = nil, commandDisplay: String? = nil) -> AsyncThrowingStream<String, Error> {
+    static func stream(
+        executable: String,
+        args: [String],
+        environment: [String: String]? = nil,
+        idleTimeoutSeconds: TimeInterval? = nil,
+        commandDisplay: String? = nil,
+        downloadMonitor: HomebrewDownloadEvidenceMonitor? = nil,
+        proxyState: HomebrewExplicitProxyState? = nil
+    ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let p = Process(); let pipe = Pipe()
             p.executableURL = URL(fileURLWithPath: executable); p.arguments = args
@@ -1456,12 +1998,38 @@ struct ShellService {
 
             let errBuffer = SafeBuffer(); let lineBuffer = LineBuffer(); let context = StreamContext()
             let timeoutLabel = commandDisplay ?? ([executable] + args).joined(separator: " ")
+            if let proxyState {
+                continuation.yield("\(proxyState.logLine)\n")
+            }
+            if let monitorMessage = downloadMonitor?.sample().message {
+                continuation.yield("\(monitorMessage)\n")
+            }
+            let timeoutCoordinator = HomebrewStreamIdleTimeoutCoordinator()
             let timeoutSource: DispatchSourceTimer? = idleTimeoutSeconds.map { seconds in
                 let source = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-                source.schedule(deadline: .now() + seconds, repeating: .seconds(5))
+                let sampleInterval = HomebrewStreamIdleTimeoutPolicy.downloadSamplingInterval
+                let initialDelay = HomebrewStreamIdleTimeoutPolicy.initialTimerDelay(
+                    idleTimeoutSeconds: seconds,
+                    hasDownloadMonitor: downloadMonitor != nil
+                )
+                source.schedule(deadline: .now() + initialDelay, repeating: .seconds(Int(sampleInterval)))
                 source.setEventHandler {
-                    guard context.shouldTimeOut(after: seconds) else { return }
-                    context.markTimedOut(command: timeoutLabel, seconds: Int(seconds.rounded()))
+                    let now = Date()
+                    let sample = downloadMonitor?.sample()
+                    if let sample {
+                        if let message = sample.message {
+                            continuation.yield("\(message)\n")
+                        }
+                    }
+                    guard timeoutCoordinator.shouldTerminate(
+                        idleSeconds: context.idleSeconds(now: now),
+                        timeoutSeconds: seconds,
+                        sample: sample,
+                        now: now
+                    ) else { return }
+                    let evidence = downloadMonitor?.timeoutDetail()
+                    let labeledCommand = evidence.map { "\(timeoutLabel)；下载证据：\($0)" } ?? timeoutLabel
+                    context.markTimedOut(command: labeledCommand, seconds: Int(seconds.rounded()))
                     if p.isRunning {
                         p.terminate()
                         DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
@@ -1490,6 +2058,9 @@ struct ShellService {
                 let data = h.availableData; guard !data.isEmpty else { return }
                 context.markOutput()
                 errBuffer.append(data)
+                if let text = String(data: data, encoding: .utf8) {
+                    downloadMonitor?.observe(output: text)
+                }
                 for line in lineBuffer.append(data) { continuation.yield(line) }
             }
 
@@ -1502,10 +2073,17 @@ struct ShellService {
                 if !tail.isEmpty {
                     context.markOutput()
                     errBuffer.append(tail)
+                    if let text = String(data: tail, encoding: .utf8) {
+                        downloadMonitor?.observe(output: text)
+                    }
                     for l in lineBuffer.append(tail) { continuation.yield(l) }
                 }
 
                 if let r = lineBuffer.flush() { continuation.yield(r) }
+                if let monitor = downloadMonitor {
+                    monitor.finalSample()
+                    continuation.yield("下载证据摘要：\(monitor.summary().detailText)\n")
+                }
                 try? pipe.fileHandleForReading.close()
 
                 if let timeoutError = context.timeoutError {
@@ -1549,12 +2127,15 @@ actor BrewService {
     }
     private func runStream(_ cmd: BrewCommand) async -> AsyncThrowingStream<String, Error> {
         guard let b = try? getBrewPath() else { return .init { $0.finish(throwing: BrewError.brewNotFound) } }
+        let monitor = downloadMonitor(for: cmd)
         return ShellService.stream(
             executable: b,
             args: cmd.args,
             environment: proxyEnvironment,
             idleTimeoutSeconds: streamIdleTimeout(for: cmd),
-            commandDisplay: cmd.displayCommand
+            commandDisplay: cmd.displayCommand,
+            downloadMonitor: monitor,
+            proxyState: HomebrewExplicitProxyState.make(environment: proxyEnvironment)
         )
     }
 
@@ -1588,6 +2169,24 @@ actor BrewService {
         default:
             return nil
         }
+    }
+
+    private func downloadMonitor(for cmd: BrewCommand) -> HomebrewDownloadEvidenceMonitor? {
+        let targetTokens: [String]
+        switch cmd {
+        case .upgrade(let args):
+            targetTokens = args.filter { !$0.hasPrefix("-") }
+        case .install(let name, _):
+            targetTokens = [name]
+        default:
+            return nil
+        }
+        return HomebrewDownloadEvidenceMonitor(
+            directories: HomebrewDownloadEvidenceMonitor.defaultDownloadDirectories(
+                environment: HomebrewDownloadEvidenceMonitor.effectiveEnvironment(overrides: proxyEnvironment)
+            ),
+            targetTokens: targetTokens
+        )
     }
 
     func getPinnedList() async throws -> Set<String> {

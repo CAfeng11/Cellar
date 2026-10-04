@@ -270,6 +270,18 @@ final class AppState: ObservableObject {
         Task { await service.configureProxy(env: env) }
     }
 
+    private var brewExplicitProxyLogLine: String {
+        let config = settings.config
+        guard config.brewProxyEnabled else {
+            return "Cellar 显式代理：未注入 Cellar 显式代理；实际代理节点未知，仍可能受系统代理、TUN 或透明代理影响。"
+        }
+        return "Cellar 显式代理：已注入 \(config.proxyProtocol.rawValue) \(config.proxyHost):\(config.proxyPort)；实际出口节点未知。"
+    }
+
+    private func logBrewExplicitProxyState() {
+        addLog(brewExplicitProxyLogLine, type: .info)
+    }
+
     var displayPackages: [BrewPackage] {
         let filtered = outdatedPackages.filter { match(pkg: $0) }
         return filtered.sorted { ($0.isPinned != $1.isPinned) ? $0.isPinned : $0.name < $1.name }
@@ -518,6 +530,7 @@ final class AppState: ObservableObject {
         mainTask = Task { @MainActor in
             defer { self.mainTask = nil; if case .checking = self.activity { self.activity = .idle } }
             do {
+                logBrewExplicitProxyState()
                 if full {
                     addLog("正在更新 Homebrew 仓库...", type: .command)
                     for try await line in await service.updateTap() { addLog(line, type: .stream) }
@@ -560,7 +573,16 @@ final class AppState: ObservableObject {
         pinTask = Task { @MainActor in
             defer { self.pinTask = nil; self.processingID = nil; if case .pinning(_) = self.activity { self.activity = .idle } }
             addLog("\(targetState ? "锁定" : "解锁") \(pkg.name)...", type: .command)
-            do { let stream = await service.pinAction(name: pkg.name, pin: targetState); for try await _ in stream { }; addLog("操作成功", type: .success) } catch { if let i = outdatedPackages.firstIndex(where: { $0.id == pkg.id }) { outdatedPackages[i].isPinned = originalState }; if let i = installedPackages.firstIndex(where: { $0.id == pkg.id }) { installedPackages[i].isPinned = originalState }; addLog("操作失败: \(error.localizedDescription)", type: .failure) }
+            logBrewExplicitProxyState()
+            do {
+                let stream = await service.pinAction(name: pkg.name, pin: targetState)
+                for try await _ in stream { }
+                addLog("操作成功", type: .success)
+            } catch {
+                if let i = outdatedPackages.firstIndex(where: { $0.id == pkg.id }) { outdatedPackages[i].isPinned = originalState }
+                if let i = installedPackages.firstIndex(where: { $0.id == pkg.id }) { installedPackages[i].isPinned = originalState }
+                addLog("操作失败: \(error.localizedDescription)", type: .failure)
+            }
         }
     }
     func upgrade(pkgs: [BrewPackage]? = nil) {
@@ -577,10 +599,17 @@ final class AppState: ObservableObject {
         let title = pkgs == nil ? "全部" : (pkgs!.count == 1 ? pkgs![0].name : "批量")
         withAnimation { activity = .upgrading(title); processingID = pkgs?.count == 1 ? pkgs![0].id : nil }
         mainTask = Task { @MainActor in
+            var attemptedPackageIDs = Set<String>()
+            var completedPackageIDs = Set<String>()
+            var failedPackageIDs = Set<String>()
+            var activeCommandPackageIDs = Set<String>()
             defer { self.mainTask = nil; self.processingID = nil; if case .upgrading(_) = self.activity { self.activity = .idle } }
             do {
+                logBrewExplicitProxyState()
                 if let single = pkgs?.first, pkgs?.count == 1 {
                     var args = [single.name]; if single.type == .cask { args.insert("--cask", at: 0) }
+                    attemptedPackageIDs.insert(single.id)
+                    activeCommandPackageIDs = [single.id]
                     addLog("开始升级 \(single.name)：brew upgrade \(args.joined(separator: " "))", type: .command)
                     self.latestBrewOperationSummary = BrewOperationPlanner.upgradeProgressSummary(
                         stage: .upgradingPackage,
@@ -589,7 +618,15 @@ final class AppState: ObservableObject {
                         currentPackage: single,
                         currentPackageIndex: 1
                     )
-                    for try await line in await service.upgrade(args: args) { addLog(line, type: .stream) }
+                    do {
+                        for try await line in await service.upgrade(args: args) { addLog(line, type: .stream) }
+                        completedPackageIDs.insert(single.id)
+                        activeCommandPackageIDs.removeAll()
+                    } catch {
+                        failedPackageIDs.formUnion(activeCommandPackageIDs)
+                        activeCommandPackageIDs.removeAll()
+                        throw error
+                    }
                     addLog("升级成功，正在复核可升级列表...", type: .success)
                     self.latestBrewOperationSummary = BrewOperationPlanner.upgradeProgressSummary(
                         stage: .verifyingOutdated,
@@ -629,8 +666,19 @@ final class AppState: ObservableObject {
                     )
                     let argumentGroups = PackageUpgradeScope.upgradeArgumentGroups(for: targetPackages)
                     for (index, args) in argumentGroups.enumerated() {
+                        let groupPackages = self.packages(in: targetPackages, matchingUpgradeArguments: args)
+                        activeCommandPackageIDs = Set(groupPackages.map(\.id))
+                        attemptedPackageIDs.formUnion(activeCommandPackageIDs)
                         addLog("开始批量升级第 \(index + 1)/\(argumentGroups.count) 组：brew upgrade \(args.joined(separator: " "))", type: .command)
-                        for try await line in await service.upgrade(args: args) { addLog(line, type: .stream) }
+                        do {
+                            for try await line in await service.upgrade(args: args) { addLog(line, type: .stream) }
+                            completedPackageIDs.formUnion(activeCommandPackageIDs)
+                            activeCommandPackageIDs.removeAll()
+                        } catch {
+                            failedPackageIDs.formUnion(activeCommandPackageIDs)
+                            activeCommandPackageIDs.removeAll()
+                            throw error
+                        }
                     }
                     addLog("批量升级流程结束，正在复核可升级列表...", type: .success)
                     self.latestBrewOperationSummary = BrewOperationPlanner.upgradeProgressSummary(
@@ -664,10 +712,41 @@ final class AppState: ObservableObject {
                     self.latestBrewOperationSummary = finishedSummary
                 }
             } catch {
-                self.latestBrewOperationSummary = BrewOperationPlanner.failureSummary(kind: .upgrade, startedAt: startedAt, packages: targetPackages, error: error)
+                if !activeCommandPackageIDs.isEmpty {
+                    failedPackageIDs.formUnion(activeCommandPackageIDs)
+                    activeCommandPackageIDs.removeAll()
+                }
+                let verificationOutcome = await self.outdatedSnapshotForFailedUpgrade()
+                self.latestBrewOperationSummary = BrewOperationPlanner.upgradeFailureSummary(
+                    startedAt: startedAt,
+                    targetPackages: targetPackages,
+                    attemptedPackageIDs: attemptedPackageIDs,
+                    completedPackageIDs: completedPackageIDs,
+                    failedPackageIDs: failedPackageIDs,
+                    remainingOutdatedPackages: verificationOutcome.remainingOutdatedPackages,
+                    verificationError: verificationOutcome.error,
+                    error: error
+                )
                 handleError(error); self.scheduleOutdatedSnapshot()
             }
         }
+    }
+
+    private func outdatedSnapshotForFailedUpgrade() async -> (remainingOutdatedPackages: [BrewPackage]?, error: Error?) {
+        do {
+            addLog("升级失败后正在复核可升级列表...", type: .info)
+            let remaining = try await applyOutdatedSnapshot()
+            return (remaining, nil)
+        } catch {
+            addLog("升级失败后复核失败: \(error.localizedDescription)", type: .info)
+            return (nil, error)
+        }
+    }
+
+    private func packages(in targetPackages: [BrewPackage], matchingUpgradeArguments args: [String]) -> [BrewPackage] {
+        let names = Set(args.filter { !$0.hasPrefix("-") })
+        if names.isEmpty { return targetPackages }
+        return targetPackages.filter { names.contains($0.name) }
     }
     func confirmGreedySync(_ pkg: BrewPackage) {
         guard PackageGreedySyncScope.isEligible(pkg) else { return }
@@ -701,6 +780,7 @@ final class AppState: ObservableObject {
             }
             do {
                 addLog("开始贪婪同步 \(pkg.name)：brew upgrade \(args.joined(separator: " "))", type: .command)
+                logBrewExplicitProxyState()
                 self.latestBrewOperationSummary = BrewOperationPlanner.greedySyncProgressSummary(
                     stage: .syncingCask,
                     packages: targetPackages,
@@ -755,6 +835,7 @@ final class AppState: ObservableObject {
         mainTask = Task { @MainActor in
             defer { self.mainTask = nil; self.processingID = nil; if case .uninstalling(_) = self.activity { self.activity = .idle } }
             addLog("开始卸载 \(pkg.name)...", type: .command)
+            logBrewExplicitProxyState()
             do {
                 for try await line in await service.uninstall(pkg) { addLog(line, type: .stream) }
                 addLog("卸载完成", type: .success)
@@ -781,6 +862,7 @@ final class AppState: ObservableObject {
         mainTask = Task { @MainActor in
             defer { self.mainTask = nil; if case .cleaning = self.activity { self.activity = .idle } }
             addLog("执行 brew cleanup...", type: .command)
+            logBrewExplicitProxyState()
             do {
                 for try await line in await service.cleanup() { addLog(line, type: .stream) }
                 addLog("清理完成", type: .success)
@@ -838,6 +920,7 @@ final class AppState: ObservableObject {
             )
             self.latestBrewOperationSummary = BrewOperationPlanner.runningSummary(kind: .install, packages: [targetPackage], startedAt: startedAt)
             addLog("开始安装 \(item.name) (\(isCask ? "Cask" : "Formula"))...", type: .command)
+            logBrewExplicitProxyState()
             do {
                 let stream = await service.install(item.name, isCask: isCask)
                 for try await line in stream { addLog(line, type: .stream) }
@@ -2104,6 +2187,13 @@ struct BrewOperationSummaryView: View {
                             .lineLimit(2)
                             .help(packageDetailHelp)
                     }
+                    if !summary.packageVerificationResults.isEmpty {
+                        Text(packageVerificationLine)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help("逐包复核结果：已完成、仍 outdated、复核失败、命令失败、未执行、被超时终止或状态未知。")
+                    }
                     Button("打开高级日志") {
                         withAnimation { appState.showLogSheet = true }
                     }
@@ -2167,6 +2257,17 @@ struct BrewOperationSummaryView: View {
 
     private var packageDetailHelp: String {
         "逐包版本变化使用 Homebrew outdated 目标快照；大小列保留“当前/旧包参考体量”和下载大小分离语义，不代表升级耗时。"
+    }
+
+    private var packageVerificationLine: String {
+        let text = summary.packageVerificationResults
+            .prefix(8)
+            .map(\.displayText)
+            .joined(separator: "；")
+        if summary.packageVerificationResults.count > 8 {
+            return "逐包复核：\(text)；另有 \(summary.packageVerificationResults.count - 8) 个目标。"
+        }
+        return "逐包复核：\(text)。"
     }
 }
 struct LibraryView: View {
