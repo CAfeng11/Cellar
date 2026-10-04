@@ -1,5 +1,17 @@
 # Releasing Cellar
 
+## Source provenance
+
+Use the repository checkout as the development workspace and tags to identify releases.
+Do not maintain separate version-named source repositories. Before packaging, review
+`git status`, verify the intended commit and version, and check the files being published.
+
+`./script/export_public_source.sh <empty-output-directory>` exports the committed
+`HEAD` only. Untracked files and uncommitted edits are excluded; commit intended
+product changes before exporting. Never distribute a recursive copy of a working
+directory containing local configuration, private notes, logs, or backups. Ignore
+rules do not remove data already present in Git history.
+
 ## Unsigned prerelease
 
 Unsigned evaluation builds use a hyphenated prerelease tag such as

@@ -6,7 +6,7 @@
 - [x] `./script/test.sh` 通过
 - [x] Release 配置可以构建
 - [x] 公开源快照没有 `xcuserdata`、DerivedData、日志或本机绝对路径
-- [x] 公开源快照已检查凭据和个人信息，并从空 Git 历史开始
+- [x] 发行源码及历史已检查凭据和个人信息；后续版本沿用同一仓库历史
 
 ## Documentation
 
@@ -17,7 +17,7 @@
 
 ## GitHub
 
-- [x] 已准备无私有规划历史的公开源快照
+- [x] 发行源码可追溯到同一仓库中的提交与版本标签
 - [x] 已准备 GitHub Actions workflow
 - [x] 创建 GitHub 远程公共仓库并确认首次 CI 通过
 - [x] 启用 Private vulnerability reporting

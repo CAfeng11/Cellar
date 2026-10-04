@@ -24,3 +24,9 @@ DerivedData/
 协议/
 public-release/
 dist/
+
+# Local-only agent guidance and migration archives
+/AGENTS.md
+/AGENT.md
+/WORKSPACE-STATE.md
+/.local-backups/
