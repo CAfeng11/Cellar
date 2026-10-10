@@ -2,6 +2,287 @@ import XCTest
 @testable import Cellar
 
 final class CellarLogicTests: XCTestCase {
+    @MainActor
+    func testMultiKegLinkedLatestVersionIgnoresRetainedOlderKegs() throws {
+        for (name, old, latest) in [("simdjson", "5.0.2", "5.0.3"), ("node", "26.10.0_2", "26.11.1"), ("uv", "0.12.23", "0.13.0")] {
+            for versions in [[old, latest], [latest, old]] {
+                let package = try multiKegPackage(name: name, versions: versions, current: latest, linked: latest)
+                XCTAssertEqual(package.versionDifferenceKind, .none, name)
+                XCTAssertFalse(package.hasRepoDiff, name)
+                XCTAssertTrue(package.versionDisplay.hasPrefix(latest), name)
+                XCTAssertTrue(package.installedVersionHelpText.contains("已链接版本：\(latest)"))
+                XCTAssertEqual(Set(package.installedVersions), Set(versions))
+            }
+        }
+    }
+
+    @MainActor
+    func testMultiKegLinkedOldVersionDoesNotHideActualVersionDifference() throws {
+        let package = try multiKegPackage(versions: ["2.0", "1.0"], current: "2.0", linked: "1.0")
+        XCTAssertEqual(package.versionDifferenceKind, .unknownRawDifference)
+        XCTAssertTrue(package.versionDisplay.hasPrefix("1.0"))
+    }
+
+    @MainActor
+    func testMultiKegWithoutLinkedMetadataUsesNumericLatestInstalledVersion() throws {
+        for versions in [["1.9", "1.10"], ["1.10", "1.9"]] {
+            let package = try multiKegPackage(versions: versions, current: "1.10", linked: nil)
+            XCTAssertEqual(package.versionDifferenceKind, .none)
+        }
+        let revision = try multiKegPackage(versions: ["1.0_2", "1.0_10"], current: "1.0_10", linked: nil)
+        XCTAssertEqual(revision.versionDifferenceKind, .none)
+    }
+
+    @MainActor
+    func testLinkedKegMissingFromInstalledMetadataCannotClaimCurrentVersion() throws {
+        let package = try multiKegPackage(versions: ["1.0"], current: "2.0", linked: "2.0")
+        XCTAssertEqual(package.versionDifferenceKind, .unknownRawDifference)
+        XCTAssertTrue(package.hasRepoDiff)
+    }
+
+    @MainActor
+    func testMultiKegComparisonCannotOverrideExplicitOutdatedCandidate() throws {
+        let package = try multiKegPackage(versions: ["1.0", "2.0"], current: "2.0", linked: "2.0")
+        XCTAssertEqual(package.versionDifferenceKind(isOutdatedCandidate: true), .outdatedCandidate)
+    }
+
+    @MainActor
+    func testFailureReplayPreservesEarlySSLCauseAndUsefulTailInBothCommandPaths() async throws {
+        let text = sslReplayOutput()
+        for streaming in [false, true] {
+            let error = try await replayCommandFailure(text, streaming: streaming)
+            guard case .executionFailed(let code, let message) = error else { return XCTFail("Expected execution failure") }
+            XCTAssertEqual(code, 1)
+            XCTAssertTrue(message.contains("SSL_ERROR_SYSCALL"))
+            XCTAssertTrue(message.contains("Failed to download resource \"node\""))
+            XCTAssertTrue(message.contains("==> Upgraded 1 dependent"))
+            XCTAssertTrue(message.contains("node 26.10.0_2 -> 26.11.1"))
+            XCTAssertLessThanOrEqual(message.count, 3600)
+            XCTAssertEqual(BrewReliabilityDiagnostics.diagnose(error: error).kind, .endpoint)
+        }
+    }
+
+    @MainActor
+    func testUnclassifiedLongFailureRetainsBeginningAndEnd() async throws {
+        let text = "custom-tool stopped: early detail\n" + String(repeating: "ordinary output\n", count: 400) + "final detail\n"
+        let error = try await replayCommandFailure(text, streaming: true)
+        XCTAssertTrue(error.localizedDescription.contains("custom-tool stopped: early detail"))
+        XCTAssertTrue(error.localizedDescription.contains("final detail"))
+    }
+
+    @MainActor
+    func testShortFailureOutputIsUnchanged() async throws {
+        let text = "Permission denied: test-only directory\n"
+        let error = try await replayCommandFailure(text, streaming: false)
+        XCTAssertEqual(error, .executionFailed(code: 1, message: text.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    @MainActor
+    func testSSLReplayKeepsOverallFailureAndVerifiedPartialCompletion() async throws {
+        let error = try await replayCommandFailure(sslReplayOutput(), streaming: true)
+        let package = try multiKegPackage(name: "simdjson", versions: ["5.0.2", "5.0.3"], current: "5.0.3", linked: "5.0.3")
+        let summary = BrewOperationPlanner.upgradeFailureSummary(startedAt: Date(), targetPackages: [package], attemptedPackageIDs: [package.id], failedPackageIDs: [package.id], remainingOutdatedPackages: [], error: error)
+        XCTAssertEqual(summary.status, .failed)
+        XCTAssertEqual(summary.packageVerificationResults.first?.status, .completed)
+        XCTAssertTrue(summary.summaryText.contains("SSL_ERROR_SYSCALL"))
+        XCTAssertTrue(summary.summaryText.contains("部分处理"))
+    }
+
+    @MainActor
+    private func multiKegPackage(name: String = "sample", versions: [String], current: String, linked: String?) throws -> BrewPackage {
+        var formula: [String: Any] = ["name": name, "versions": ["stable": current], "installed": versions.map { ["version": $0] }]
+        if let linked { formula["linked_keg"] = linked }
+        let data = try JSONSerialization.data(withJSONObject: ["formulae": [formula], "casks": []])
+        return try XCTUnwrap(JSONParser.parseInstalled(String(decoding: data, as: UTF8.self), leaves: []).first)
+    }
+
+    @MainActor
+    private func sslReplayOutput() -> String {
+        // Public error block and completion lines from the real GUI acceptance log.
+        """
+        Error: Failed to download resource "node"
+        Download failed: https://ghcr.io/v2/homebrew/core/node/blobs/sha256:f00f5a12c1bbfa5394d145c7bbf44d616fd461187cd9d5817161d1b59ae0a4da
+        curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to ghcr.io:443
+        """ + "\n" + String(repeating: "Warning: The sandbox cannot prevent formulae from reading a required cache directory.\n", count: 80) + "==> Upgraded 1 dependent\nnode 26.10.0_2 -> 26.11.1\n"
+    }
+
+    @MainActor
+    private func replayCommandFailure(_ text: String, streaming: Bool) async throws -> BrewError {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cellar-error-replay-\(UUID().uuidString).txt")
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let args = ["-c", "cat \"$1\" >&2; exit 1", "cellar-error-replay", url.path]
+        do {
+            if streaming { for try await _ in ShellService.stream(executable: "/bin/sh", args: args) { } }
+            else { _ = try await ShellService.runSynchronous(executable: "/bin/sh", args: args) }
+            XCTFail("Failed command must not succeed")
+            throw BrewError.parseError("Replay unexpectedly succeeded")
+        } catch let error as BrewError { return error }
+    }
+
+    @MainActor
+    func testCommandStreamCancelledBeforeLaunchDoesNotRunProcess() async throws {
+        let marker = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let result = await Task { () -> BrewError? in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                for try await _ in ShellService.stream(executable: "/usr/bin/touch", args: [marker.path]) { }
+                return nil
+            } catch { return error as? BrewError }
+        }.value
+        XCTAssertEqual(result, .cancelled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    @MainActor
+    func testCommandStreamCancellationWhileWaitingThrowsInsteadOfSucceeding() async {
+        let ready = expectation(description: "process output received")
+        let consumer = Task { () -> BrewError? in
+            do {
+                for try await _ in ShellService.stream(executable: "/bin/sh", args: ["-c", "printf 'ready\\n'; exec /bin/sleep 30"]) {
+                    ready.fulfill()
+                }
+                return nil
+            } catch { return error as? BrewError }
+        }
+        await fulfillment(of: [ready], timeout: 3)
+        consumer.cancel()
+        let result = await consumer.value
+        XCTAssertEqual(result, .cancelled)
+    }
+
+    @MainActor
+    func testCommandStreamCancellationAfterBufferedOutputCannotReachSuccess() async {
+        let result = await Task { () -> BrewError? in
+            let stream = ShellCommandStream { continuation in
+                continuation.yield("download started\n")
+                continuation.finish()
+            }
+            do {
+                for try await _ in stream { withUnsafeCurrentTask { $0?.cancel() } }
+                return nil
+            } catch { return error as? BrewError }
+        }.value
+        XCTAssertEqual(result, .cancelled)
+    }
+
+    @MainActor
+    func testCommandStreamPreservesSuccessfulOutput() async throws {
+        var output = ""
+        for try await line in ShellService.stream(executable: "/usr/bin/printf", args: ["ok\n"]) { output += line }
+        XCTAssertEqual(output, "ok\n")
+    }
+
+    @MainActor
+    func testCommandStreamPreservesExecutionFailure() async {
+        do {
+            for try await _ in ShellService.stream(executable: "/bin/sh", args: ["-c", "printf failure >&2; exit 7"]) { }
+            XCTFail("failed command must not reach success")
+        } catch {
+            guard let brewError = error as? BrewError, case .executionFailed(let code, let message) = brewError else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(code, 7)
+            XCTAssertTrue(message.contains("failure"))
+        }
+    }
+
+    @MainActor
+    func testProcessOwnedDependencyGrowthExtendsFullIdleWindow() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cellar-owned-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("different-dependency.incomplete")
+        let process = try startTestDownloadOwner(at: file)
+        defer { process.terminate(); process.waitUntilExit() }
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["parent"])
+        monitor.bindProcess(process)
+        XCTAssertTrue(monitor.sample().trustedDiscovery)
+        let writer = try FileHandle(forWritingTo: file)
+        defer { try? writer.close() }
+        try writer.seekToEnd()
+        try writer.write(contentsOf: Data(repeating: 1, count: 32))
+        let growth = monitor.sample()
+        XCTAssertTrue(growth.trustedByteGrowth)
+        XCTAssertFalse(growth.uncertainActivity)
+        XCTAssertTrue(monitor.summary().detailText.contains("打开文件关联"))
+        var state = HomebrewStreamIdleTimeoutState()
+        let now = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 300, timeoutSeconds: 180, sample: growth, now: now, state: &state), .continueWaiting)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 315, timeoutSeconds: 180, sample: nil, now: now.addingTimeInterval(15), state: &state), .continueWaiting)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 480, timeoutSeconds: 180, sample: nil, now: now.addingTimeInterval(180), state: &state), .terminate)
+    }
+
+    @MainActor
+    func testUnrelatedDownloadCannotExtendBoundProcessEvenWithMatchingName() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cellar-unrelated-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("parent.incomplete")
+        let unrelated = try startTestDownloadOwner(at: file)
+        defer { unrelated.terminate(); unrelated.waitUntilExit() }
+        let command = Process()
+        command.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        command.arguments = ["10"]
+        try command.run()
+        defer { command.terminate(); command.waitUntilExit() }
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["parent"])
+        monitor.bindProcess(command)
+        XCTAssertFalse(monitor.sample().trustedDiscovery)
+        let writer = try FileHandle(forWritingTo: file)
+        defer { try? writer.close() }
+        try writer.seekToEnd()
+        try writer.write(contentsOf: Data(repeating: 1, count: 32))
+        let growth = monitor.sample()
+        XCTAssertFalse(growth.trustedByteGrowth)
+        XCTAssertTrue(growth.uncertainActivity)
+        var state = HomebrewStreamIdleTimeoutState()
+        let now = Date(timeIntervalSince1970: 2_000)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 180, timeoutSeconds: 180, sample: growth, now: now, state: &state), .continueWaiting)
+        XCTAssertEqual(HomebrewStreamIdleTimeoutPolicy.decision(idleSeconds: 196, timeoutSeconds: 180, sample: growth, now: now.addingTimeInterval(16), state: &state), .terminate)
+    }
+
+    @MainActor
+    func testClosedProcessFileAssociationDoesNotTrustLaterUnrelatedGrowth() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cellar-closed-owner-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("parent.incomplete")
+        let process = try startTestDownloadOwner(at: file)
+        let monitor = HomebrewDownloadEvidenceMonitor(directories: [root.path], targetTokens: ["parent"])
+        monitor.bindProcess(process)
+        XCTAssertTrue(monitor.sample().trustedDiscovery)
+        process.terminate()
+        process.waitUntilExit()
+        let writer = try FileHandle(forWritingTo: file)
+        defer { try? writer.close() }
+        try writer.seekToEnd()
+        try writer.write(contentsOf: Data(repeating: 1, count: 32))
+        let sample = monitor.sample()
+        XCTAssertFalse(sample.trustedByteGrowth)
+        XCTAssertTrue(sample.uncertainActivity)
+    }
+
+    private func startTestDownloadOwner(at file: URL) throws -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // A real child owns fd 3. The parent trap stops only this fixture child.
+        process.arguments = ["-c", "trap 'kill \"$child\" 2>/dev/null; wait \"$child\"' TERM INT EXIT; /bin/sh -c 'exec 3> \"$1\"; printf x >&3; exec /bin/sleep 10' fixture \"$1\" & child=$!; wait \"$child\"", "fixture", file.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
+               (attrs[.size] as? NSNumber)?.intValue == 1 { return process }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        process.terminate()
+        process.waitUntilExit()
+        throw NSError(domain: "CellarTestDownloadOwner", code: 1)
+    }
+
     func testDashboardSummaryDoesNotTreatUnscannedRuntimeAsClear() {
         let summary = DashboardHealthSummary.make(
             brewStatus: .upToDate,

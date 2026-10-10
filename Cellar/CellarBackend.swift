@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Darwin
 
 // ⚠️ 严禁在此文件引入 SwiftUI 或 AppKit！
 
@@ -449,6 +450,7 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
     var installedSizeBytes: Int64?
     let appArtifactNames: [String]
     let caskVersionTruth: CaskVersionTruth?
+    let linkedFormulaVersion: String?
 
     nonisolated init(
         name: String,
@@ -461,7 +463,8 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
         autoUpdates: Bool,
         installedSizeBytes: Int64?,
         appArtifactNames: [String],
-        caskVersionTruth: CaskVersionTruth? = nil
+        caskVersionTruth: CaskVersionTruth? = nil,
+        linkedFormulaVersion: String? = nil
     ) {
         self.name = name
         self.desc = desc
@@ -474,6 +477,7 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
         self.installedSizeBytes = installedSizeBytes
         self.appArtifactNames = appArtifactNames
         self.caskVersionTruth = caskVersionTruth
+        self.linkedFormulaVersion = linkedFormulaVersion?.nilIfBlank
     }
 
     nonisolated var hasRepoDiff: Bool {
@@ -488,6 +492,19 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
         return installedVersions.map { PackageVersionIdentity.make(rawVersion: $0, type: type) }
     }
 
+    // Homebrew's linked_keg is authoritative when present. Keg-only/older
+    // metadata may omit it; then compare the highest recorded installed version.
+    nonisolated var formulaComparisonIdentity: PackageVersionIdentity? {
+        guard type == .formula else { return nil }
+        let identities = installedVersionIdentities
+        if let linkedFormulaVersion {
+            return identities.first { $0.rawVersion == linkedFormulaVersion }
+        }
+        return identities.max {
+            $0.rawVersion.compare($1.rawVersion, options: .numeric) == .orderedAscending
+        }
+    }
+
     nonisolated var currentVersionIdentity: PackageVersionIdentity {
         PackageVersionIdentity.make(rawVersion: currentVersion, type: type)
     }
@@ -495,6 +512,10 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
     nonisolated var versionDisplay: String {
         if type == .cask, autoUpdates, let caskVersionTruth {
             return caskVersionTruth.preferredInstalledDisplayVersion
+        }
+        if type == .formula, linkedFormulaVersion != nil, let linked = formulaComparisonIdentity {
+            let retained = installedVersionIdentities.filter { $0.rawVersion != linked.rawVersion }.map(\.displayVersion)
+            return retained.isEmpty ? linked.displayVersion : "\(linked.displayVersion)（已链接），保留 \(retained.joined(separator: ", "))"
         }
         let versions = installedVersionIdentities.map(\.displayVersion)
         return versions.isEmpty ? "-" : versions.joined(separator: ", ")
@@ -505,6 +526,10 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
             return caskVersionTruth.helpText
         }
         let raw = installedVersions.isEmpty ? "-" : installedVersions.joined(separator: ", ")
+        if type == .formula, let linkedFormulaVersion {
+            let evidence = formulaComparisonIdentity == nil ? "（未在安装记录中找到，状态待确认）" : ""
+            return "已安装版本：\(raw)。Homebrew 已链接版本：\(linkedFormulaVersion)\(evidence)"
+        }
         return "已安装版本：\(raw)"
     }
 
@@ -563,9 +588,13 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
             }
             return .outdatedCandidate
         }
-        guard let installed = installedVersionIdentities.first else { return .none }
         let current = currentVersionIdentity
-        guard installed.comparableVersion != "?", current.comparableVersion != "?" else { return .none }
+        guard current.comparableVersion != "?" else { return .none }
+        let installed = type == .formula ? formulaComparisonIdentity : installedVersionIdentities.first
+        guard let installed else {
+            return type == .formula && linkedFormulaVersion != nil ? .unknownRawDifference : .none
+        }
+        guard installed.comparableVersion != "?" else { return .none }
 
         switch type {
         case .formula:
@@ -599,6 +628,12 @@ struct BrewPackage: Identifiable, Equatable, Sendable {
             "比较版本：本机 \(installedComparable.isEmpty ? "-" : installedComparable) / 仓库 \(identity.comparableVersion)",
             "差异分类：\(difference.title)。\(difference.explanation)"
         ]
+        if type == .formula {
+            lines.append(installedVersionHelpText)
+            if linkedFormulaVersion == nil, let comparison = formulaComparisonIdentity {
+                lines.append("Homebrew 未提供已链接版本；按最高已安装版本 \(comparison.displayVersion) 比较，不代表已确认当前链接")
+            }
+        }
         if type == .cask, autoUpdates, let caskVersionTruth {
             lines.append(caskVersionTruth.helpText)
         }
@@ -1363,6 +1398,50 @@ enum HomebrewStreamIdleTimeoutPolicy {
     }
 }
 
+// Only files currently open in this command's process tree can extend its
+// idle deadline. Filename/mtime alone cannot distinguish concurrent brew jobs.
+enum HomebrewDownloadProcessFiles {
+    nonisolated static func incompletePaths(for process: Process) -> Set<String> {
+        guard process.isRunning else { return [] }
+        var pending = [process.processIdentifier]
+        var visited = Set<pid_t>()
+        var paths = Set<String>()
+        while let pid = pending.popLast(), visited.count < 256 {
+            guard visited.insert(pid).inserted else { continue }
+            var children = [pid_t](repeating: 0, count: 256)
+            let childCount = children.withUnsafeMutableBytes {
+                proc_listchildpids(pid, $0.baseAddress, Int32($0.count))
+            }
+            if childCount > 0 {
+                pending.append(contentsOf: children.prefix(Int(childCount)).filter { $0 > 0 })
+            }
+            let descriptorBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            guard descriptorBytes > 0 else { continue }
+            let capacity = min(4096, Int(descriptorBytes) / MemoryLayout<proc_fdinfo>.stride + 16)
+            var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: capacity)
+            let bytes = descriptors.withUnsafeMutableBytes {
+                proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
+            }
+            guard bytes > 0 else { continue }
+            for descriptor in descriptors.prefix(Int(bytes) / MemoryLayout<proc_fdinfo>.stride)
+                where descriptor.proc_fdtype == PROX_FDTYPE_VNODE {
+                var file = vnode_fdinfowithpath()
+                let size = withUnsafeMutablePointer(to: &file) {
+                    proc_pidfdinfo(pid, descriptor.proc_fd, PROC_PIDFDVNODEPATHINFO, $0,
+                                   Int32(MemoryLayout<vnode_fdinfowithpath>.size))
+                }
+                guard size == MemoryLayout<vnode_fdinfowithpath>.size else { continue }
+                let path = withUnsafePointer(to: &file.pvip.vip_path) {
+                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+                }
+                guard path.contains(".incomplete") else { continue }
+                paths.insert(URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+            }
+        }
+        return paths
+    }
+}
+
 final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
     struct FileEvidence: Equatable, Sendable {
         let path: String
@@ -1380,6 +1459,8 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
         let path: String
         let bytes: Int64
         let matchedTarget: Bool
+        let trusted: Bool
+        let processAssociated: Bool
     }
 
     private let lock = NSLock()
@@ -1393,6 +1474,8 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
     private var suspectedRestartOrOverwrite = false
     private var observedCompletedOrMoved = false
     private var observedUnscopedOperationFile = false
+    private var observedProcessAssociation = false
+    private var process: Process?
     private var transferEvidence: HomebrewDownloadTransferEvidence = .unknown
     private var reason: String?
 
@@ -1453,6 +1536,12 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
         return result.filter { seen.insert($0).inserted }
     }
 
+    func bindProcess(_ process: Process) {
+        lock.lock()
+        self.process = process
+        lock.unlock()
+    }
+
     func observe(output text: String) {
         let evidence = HomebrewDownloadEvidenceParser.transferEvidence(from: text)
         guard evidence != .unknown else { return }
@@ -1495,9 +1584,8 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
         var uncertainActivity = false
         let seenPaths = Set(snapshots.map(\.path))
         for snapshot in snapshots {
-            if !snapshot.matchedTarget {
-                observedUnscopedOperationFile = true
-            }
+            if snapshot.processAssociated { observedProcessAssociation = true }
+            if !snapshot.trusted { observedUnscopedOperationFile = true }
             if var evidence = files[snapshot.path] {
                 if evidence.completedOrMoved {
                     evidence.initialBytes = snapshot.bytes
@@ -1506,7 +1594,7 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
                     evidence.matchedTarget = evidence.matchedTarget || snapshot.matchedTarget
                     evidence.completedOrMoved = false
                     evidence.unreadable = false
-                    if evidence.matchedTarget {
+                    if snapshot.trusted {
                         trustedDiscovery = true
                     } else {
                         uncertainActivity = true
@@ -1524,7 +1612,7 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
                     evidence.didGrow = true
                     evidence.maxBytes = max(evidence.maxBytes, snapshot.bytes)
                     didGrow = true
-                    if evidence.matchedTarget {
+                    if snapshot.trusted {
                         trustedByteGrowth = true
                     } else {
                         uncertainActivity = true
@@ -1549,7 +1637,7 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
                     completedOrMoved: false,
                     unreadable: false
                 )
-                if snapshot.matchedTarget {
+                if snapshot.trusted {
                     trustedDiscovery = true
                 } else {
                     uncertainActivity = true
@@ -1611,8 +1699,11 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
         } else {
             var reasons: [String] = []
             if let reason { reasons.append(reason) }
+            if observedProcessAssociation {
+                reasons.append("已通过本次 Homebrew 进程及子进程的打开文件关联下载，含不同名依赖")
+            }
             if observedUnscopedOperationFile {
-                reasons.append("部分 .incomplete 未命中 CLI 目标名，按本次操作期间新近变更的下载文件作为依赖或间接下载线索观察")
+                reasons.append("部分 .incomplete 无法确认属于本次进程，仅作依赖或间接下载线索观察，不以其增长无限延长等待")
             }
             if observedCompletedOrMoved {
                 reasons.append("部分 .incomplete 已完成、移走或不再可见")
@@ -1638,6 +1729,10 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
     }
 
     private func scanIncompleteFiles() -> [FileSnapshot] {
+        lock.lock()
+        let boundProcess = process
+        lock.unlock()
+        let processPaths = boundProcess.map(HomebrewDownloadProcessFiles.incompletePaths(for:)) ?? []
         var snapshots: [String: FileSnapshot] = [:]
         for directory in directories {
             guard let enumerator = FileManager.default.enumerator(atPath: directory) else { continue }
@@ -1646,11 +1741,16 @@ final class HomebrewDownloadEvidenceMonitor: @unchecked Sendable {
                 guard lower.contains(".incomplete") else { continue }
                 let path = URL(fileURLWithPath: directory).appendingPathComponent(relativePath).standardizedFileURL.path
                 let matchedTarget = targetTokens.isEmpty || targetTokens.contains(where: { lower.contains($0) })
-                if !matchedTarget && !isLikelyCurrentOperationFile(at: path) {
+                let processAssociated = processPaths.contains(URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+                if !matchedTarget && !processAssociated && !isLikelyCurrentOperationFile(at: path) {
                     continue
                 }
                 guard let size = Self.fileSize(at: path) else { continue }
-                snapshots[path] = FileSnapshot(path: path, bytes: size, matchedTarget: matchedTarget)
+                snapshots[path] = FileSnapshot(
+                    path: path, bytes: size, matchedTarget: matchedTarget,
+                    trusted: boundProcess == nil ? matchedTarget : processAssociated,
+                    processAssociated: processAssociated
+                )
             }
         }
         return snapshots.values.sorted { $0.path < $1.path }
@@ -1784,12 +1884,39 @@ private final class ProcessContainer: @unchecked Sendable {
     }
 }
 
+enum ShellFailureOutput {
+    nonisolated static func summary(_ output: String) -> String {
+        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count > 2000 else { return text }
+        let lines = text.components(separatedBy: "\n")
+        let errorIndex = lines.firstIndex {
+            $0.range(of: #"(?i)^(error:|fatal:|curl:\s*\([0-9]+\)|traceback\b)|ssl_error_|permission denied|connection refused|could not resolve|failed to connect"#,
+                     options: .regularExpression) != nil
+        }
+        let early: String
+        let label: String
+        if let errorIndex {
+            early = String(lines[errorIndex..<min(lines.count, errorIndex + 7)].joined(separator: "\n").prefix(1200))
+            label = "早期错误输出"
+        } else {
+            early = String(text.prefix(800))
+            label = "起始输出"
+        }
+        let tail = String(text.suffix(2000))
+        if tail.contains(early) { return tail }
+        return "\(label)：\n\(early)\n\n… 中间输出已省略，完整输出见原始日志 …\n\n末尾输出：\n\(tail)"
+    }
+}
+
 private final class SafeBuffer: @unchecked Sendable {
     private let lock = NSLock(); private var data = Data()
     init() {}
     func append(_ c: Data) { lock.lock(); defer { lock.unlock() }; data.append(c) }
     var allDataString: String { lock.lock(); defer { lock.unlock() }; return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
-    var tailString: String { lock.lock(); defer { lock.unlock() }; return String(String(data: data, encoding: .utf8)?.suffix(2000) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
+    var failureString: String {
+        lock.lock(); let snapshot = data; lock.unlock()
+        return ShellFailureOutput.summary(String(decoding: snapshot, as: UTF8.self))
+    }
 }
 
 private final class StreamContext: @unchecked Sendable {
@@ -1848,6 +1975,55 @@ private final class LineBuffer: @unchecked Sendable {
 enum NetworkMode: Sendable {
     case direct
     case proxyInjected([String: String])
+}
+
+// AsyncThrowingStream may return nil on task cancellation. Preserve the
+// command's cancellation result before a caller can mark install/upgrade done.
+struct ShellCommandStream: AsyncSequence, Sendable {
+    typealias Element = String
+    private let base: AsyncThrowingStream<String, Error>
+
+    nonisolated init(_ build: (AsyncThrowingStream<String, Error>.Continuation) -> Void) {
+        base = AsyncThrowingStream<String, Error> { continuation in build(continuation) }
+    }
+
+    // Type-level nonisolated requires Swift 6.1; macOS 14 CI uses Swift 6.0.
+    // That compiler has no default MainActor inference for this nested type.
+#if compiler(>=6.1)
+    nonisolated struct AsyncIterator: AsyncIteratorProtocol {
+        var base: AsyncThrowingStream<String, Error>.Iterator
+
+        mutating func next() async throws -> String? {
+            do {
+                let line = try await base.next()
+                if Task.isCancelled { throw BrewError.cancelled }
+                return line
+            } catch {
+                if Task.isCancelled { throw BrewError.cancelled }
+                throw error
+            }
+        }
+    }
+
+#else
+    struct AsyncIterator: AsyncIteratorProtocol {
+        var base: AsyncThrowingStream<String, Error>.Iterator
+
+        mutating func next() async throws -> String? {
+            do {
+                let line = try await base.next()
+                if Task.isCancelled { throw BrewError.cancelled }
+                return line
+            } catch {
+                if Task.isCancelled { throw BrewError.cancelled }
+                throw error
+            }
+        }
+    }
+
+#endif
+
+    nonisolated func makeAsyncIterator() -> AsyncIterator { AsyncIterator(base: base.makeAsyncIterator()) }
 }
 
 struct ShellService {
@@ -1955,7 +2131,7 @@ struct ShellService {
                     } else if container.isCancelled {
                         state.resumeOnce(continuation: continuation, result: .failure(BrewError.cancelled))
                     } else if p.terminationStatus != 0 {
-                        state.resumeOnce(continuation: continuation, result: .failure(BrewError.executionFailed(code: Int(p.terminationStatus), message: errBuffer.tailString)))
+                        state.resumeOnce(continuation: continuation, result: .failure(BrewError.executionFailed(code: Int(p.terminationStatus), message: errBuffer.failureString)))
                     } else {
                         state.resumeOnce(continuation: continuation, result: .success(outBuffer.allDataString))
                     }
@@ -1973,8 +2149,12 @@ struct ShellService {
         commandDisplay: String? = nil,
         downloadMonitor: HomebrewDownloadEvidenceMonitor? = nil,
         proxyState: HomebrewExplicitProxyState? = nil
-    ) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+    ) -> ShellCommandStream {
+        ShellCommandStream { continuation in
+            guard !Task.isCancelled else {
+                continuation.finish(throwing: BrewError.cancelled)
+                return
+            }
             let p = Process(); let pipe = Pipe()
             p.executableURL = URL(fileURLWithPath: executable); p.arguments = args
 
@@ -2001,6 +2181,7 @@ struct ShellService {
             if let proxyState {
                 continuation.yield("\(proxyState.logLine)\n")
             }
+            downloadMonitor?.bindProcess(p)
             if let monitorMessage = downloadMonitor?.sample().message {
                 continuation.yield("\(monitorMessage)\n")
             }
@@ -2091,7 +2272,7 @@ struct ShellService {
                 } else if context.isCancelled {
                     continuation.finish(throwing: BrewError.cancelled)
                 } else if p.terminationStatus != 0 {
-                    continuation.finish(throwing: BrewError.executionFailed(code: Int(p.terminationStatus), message: errBuffer.tailString))
+                    continuation.finish(throwing: BrewError.executionFailed(code: Int(p.terminationStatus), message: errBuffer.failureString))
                 } else {
                     continuation.finish()
                 }
@@ -2125,7 +2306,7 @@ actor BrewService {
     private func safeSearchRun(_ cmd: BrewCommand) async throws -> String {
         do { return try await runSync(cmd) } catch let BrewError.executionFailed(code, _) where code == 1 { return "" } catch { throw error }
     }
-    private func runStream(_ cmd: BrewCommand) async -> AsyncThrowingStream<String, Error> {
+    private func runStream(_ cmd: BrewCommand) async -> ShellCommandStream {
         guard let b = try? getBrewPath() else { return .init { $0.finish(throwing: BrewError.brewNotFound) } }
         let monitor = downloadMonitor(for: cmd)
         return ShellService.stream(
@@ -2228,13 +2409,13 @@ actor BrewService {
         for item in cItems { uniqueMap[item.name.lowercased()] = item }
         return uniqueMap.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
-    func install(_ name: String, isCask: Bool) async -> AsyncThrowingStream<String, Error> { await runStream(.install(name, isCask: isCask)) }
+    func install(_ name: String, isCask: Bool) async -> ShellCommandStream { await runStream(.install(name, isCask: isCask)) }
     func exportBrewfile(to url: URL) async throws { _ = try await runSync(.bundleDump(url.path)) }
-    func updateTap() async -> AsyncThrowingStream<String, Error> { await runStream(.update) }
-    func upgrade(args: [String]) async -> AsyncThrowingStream<String, Error> { await runStream(.upgrade(args)) }
-    func uninstall(_ pkg: BrewPackage) async -> AsyncThrowingStream<String, Error> { await runStream(.uninstall(pkg.name, isCask: pkg.type == .cask)) }
-    func pinAction(name: String, pin: Bool) async -> AsyncThrowingStream<String, Error> { await runStream(pin ? .pin(name) : .unpin(name)) }
-    func cleanup() async -> AsyncThrowingStream<String, Error> { await runStream(.cleanup) }
+    func updateTap() async -> ShellCommandStream { await runStream(.update) }
+    func upgrade(args: [String]) async -> ShellCommandStream { await runStream(.upgrade(args)) }
+    func uninstall(_ pkg: BrewPackage) async -> ShellCommandStream { await runStream(.uninstall(pkg.name, isCask: pkg.type == .cask)) }
+    func pinAction(name: String, pin: Bool) async -> ShellCommandStream { await runStream(pin ? .pin(name) : .unpin(name)) }
+    func cleanup() async -> ShellCommandStream { await runStream(.cleanup) }
 }
 
 // MARK: - 5. PARSERS
@@ -2297,7 +2478,7 @@ struct JSONParser {
         let cleanJSON = extractBalancedJSON(from: text) ?? text
         guard let data = cleanJSON.data(using: .utf8) else { throw BrewError.parseError("Encoding Error") }
         struct Root: Decodable { let formulae: [FormulaInfo]; let casks: [CaskInfo] }
-        struct FormulaInfo: Decodable { let name: String; let desc: String?; let versions: Versions?; let installed: [InstalledEntry]?; struct Versions: Decodable { let stable: String? }; struct InstalledEntry: Decodable { let version: String } }
+        struct FormulaInfo: Decodable { let name: String; let desc: String?; let versions: Versions?; let installed: [InstalledEntry]?; let linked_keg: String?; struct Versions: Decodable { let stable: String? }; struct InstalledEntry: Decodable { let version: String } }
 
         // --- BEGIN APPEND: CaskInfo C3-R1-STRICT-R2 ---
         struct CaskInfo: Decodable {
@@ -2311,7 +2492,7 @@ struct JSONParser {
 
         do {
             let r = try JSONDecoder().decode(Root.self, from: data)
-            let f = r.formulae.map { info in BrewPackage(name: info.name, desc: info.desc, installedVersions: info.installed?.map { $0.version } ?? [], currentVersion: info.versions?.stable ?? "?", isPinned: false, isLeaf: leaves.contains(info.name), type: .formula, autoUpdates: false, installedSizeBytes: nil, appArtifactNames: []) }
+            let f = r.formulae.map { info in BrewPackage(name: info.name, desc: info.desc, installedVersions: info.installed?.map { $0.version } ?? [], currentVersion: info.versions?.stable ?? "?", isPinned: false, isLeaf: leaves.contains(info.name), type: .formula, autoUpdates: false, installedSizeBytes: nil, appArtifactNames: [], linkedFormulaVersion: info.linked_keg) }
 
             // --- BEGIN MAPPER: Cask C3-R1-STRICT-R2 ---
             let c = r.casks.compactMap { info -> BrewPackage? in

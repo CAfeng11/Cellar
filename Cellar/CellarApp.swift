@@ -443,6 +443,7 @@ final class AppState: ObservableObject {
                 withAnimation { activity = .maintaining }; addLog("开始自动维护 (brew update)...", type: .info)
                 do {
                     for try await _ in await service.updateTap() { if Task.isCancelled { throw CancellationError() } }
+                    try Task.checkCancellation()
                     self.lastBrewUpdateAt = Date(); addLog("自动维护完成", type: .success)
                 } catch {
                     if error is CancellationError { addLog("自动维护已终止", type: .info) }
@@ -534,6 +535,7 @@ final class AppState: ObservableObject {
                 if full {
                     addLog("正在更新 Homebrew 仓库...", type: .command)
                     for try await line in await service.updateTap() { addLog(line, type: .stream) }
+                    try Task.checkCancellation()
                     self.lastBrewUpdateAt = Date()
                 }
                 try await applyOutdatedSnapshot(source: operationKind == .updateThenCheck ? .brewUpdateThenOutdated : .brewOutdated)
@@ -577,6 +579,7 @@ final class AppState: ObservableObject {
             do {
                 let stream = await service.pinAction(name: pkg.name, pin: targetState)
                 for try await _ in stream { }
+                try Task.checkCancellation()
                 addLog("操作成功", type: .success)
             } catch {
                 if let i = outdatedPackages.firstIndex(where: { $0.id == pkg.id }) { outdatedPackages[i].isPinned = originalState }
@@ -620,6 +623,7 @@ final class AppState: ObservableObject {
                     )
                     do {
                         for try await line in await service.upgrade(args: args) { addLog(line, type: .stream) }
+                        try Task.checkCancellation()
                         completedPackageIDs.insert(single.id)
                         activeCommandPackageIDs.removeAll()
                     } catch {
@@ -672,6 +676,7 @@ final class AppState: ObservableObject {
                         addLog("开始批量升级第 \(index + 1)/\(argumentGroups.count) 组：brew upgrade \(args.joined(separator: " "))", type: .command)
                         do {
                             for try await line in await service.upgrade(args: args) { addLog(line, type: .stream) }
+                            try Task.checkCancellation()
                             completedPackageIDs.formUnion(activeCommandPackageIDs)
                             activeCommandPackageIDs.removeAll()
                         } catch {
@@ -788,6 +793,7 @@ final class AppState: ObservableObject {
                     currentPackage: pkg
                 )
                 for try await line in await service.upgrade(args: args) { addLog(line, type: .stream) }
+                try Task.checkCancellation()
                 addLog("贪婪同步命令结束，正在复核更新关注列表...", type: .success)
                 self.latestBrewOperationSummary = BrewOperationPlanner.greedySyncProgressSummary(
                     stage: .verifyingGreedySync,
@@ -838,6 +844,7 @@ final class AppState: ObservableObject {
             logBrewExplicitProxyState()
             do {
                 for try await line in await service.uninstall(pkg) { addLog(line, type: .stream) }
+                try Task.checkCancellation()
                 addLog("卸载完成", type: .success)
                 self.optimisticRemoveEverywhere(pkg: pkg)
                 self.latestBrewOperationSummary = BrewOperationPlanner.finishedSummary(
@@ -865,6 +872,7 @@ final class AppState: ObservableObject {
             logBrewExplicitProxyState()
             do {
                 for try await line in await service.cleanup() { addLog(line, type: .stream) }
+                try Task.checkCancellation()
                 addLog("清理完成", type: .success)
                 self.latestBrewOperationSummary = BrewOperationPlanner.finishedSummary(
                     kind: .cleanup,
@@ -924,6 +932,7 @@ final class AppState: ObservableObject {
             do {
                 let stream = await service.install(item.name, isCask: isCask)
                 for try await line in stream { addLog(line, type: .stream) }
+                try Task.checkCancellation()
                 addLog("安装成功: \(item.name)", type: .success)
                 self.latestBrewOperationSummary = BrewOperationPlanner.finishedSummary(
                     kind: .install,
@@ -1038,7 +1047,7 @@ final class AppState: ObservableObject {
 
         var pathsToTry: [String] = []
         let fm = FileManager.default
-        if let ver = pkg.installedVersions.first {
+        if let ver = pkg.formulaComparisonIdentity?.rawVersion {
             pathsToTry.append("/opt/homebrew/Cellar/\(pkg.name)/\(ver)")
         }
 
