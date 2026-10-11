@@ -253,6 +253,12 @@ struct RuntimeTrustedPathUnion: Equatable, Sendable {
         let systemDefaults = Self.systemDefaultEntries
         var entries: [String] = []
 
+        // Keep the Shell-selected Python ahead of generic bin aliases; never select an inactive installation.
+        if let python = orderedSnapshots.first(where: { $0.kind == .python }),
+           let selectedDirectory = python.preferredRuntimeDirectoryPath,
+           !systemDefaults.contains(selectedDirectory) {
+            entries.append(Self.displayPath(selectedDirectory))
+        }
         for snapshot in orderedSnapshots {
             entries.append(contentsOf: snapshot.minimalTrustedPathEntries.filter { !systemDefaults.contains($0) })
             if snapshot.kind == .python, let pythonToolBinPath = snapshot.pythonToolBinPath {
@@ -1258,6 +1264,10 @@ struct RuntimeSnapshot: Sendable {
         return !loginPathEntries.contains(pythonToolBinPath)
     }
 
+    var needsPythonPrimarySourceSelection: Bool {
+        kind == .python && issues.contains { $0.title == "系统 Python 正在充当主环境" }
+    }
+
     var needsPythonPipGuidance: Bool {
         if kind != .python { return false }
         return issues.contains(where: {
@@ -1287,6 +1297,9 @@ struct RuntimeSnapshot: Sendable {
     var fixSummary: [String] {
         if kind == .python {
             var items: [String] = []
+            if needsPythonPrimarySourceSelection {
+                items.append("选择开发 Python 主来源；当前会话 PATH 对齐不会切换登录 Shell 的默认 Python")
+            }
             if needsCurrentSessionAlignment {
                 items.append("让 Cellar 当前会话接入 Node / Python 最小可信 union PATH")
             }
@@ -1320,6 +1333,12 @@ struct RuntimeSnapshot: Sendable {
     var fixGuidanceLines: [String] {
         if kind == .python {
             var lines: [String] = []
+            if needsPythonPrimarySourceSelection {
+                lines.append("主来源：登录 Shell 当前使用系统 Python。先明确选择开发解释器；最小可信对齐不会替你改变 Shell 默认来源。")
+                if let candidate = runtimes.first(where: { $0.source == .homebrew && $0.path.contains("/libexec/bin/python3") }) {
+                    lines.append("已安装的 Homebrew 候选：\(candidate.path)。确认选用后，在登录 Shell 初始化之后设置其目录优先级，再重新扫描；Cellar 不会静默写入配置。")
+                }
+            }
             if needsCurrentSessionAlignment {
                 lines.append("当前会话：可点击“最小可信对齐”，让 Cellar 当前会话的全局 PATH 接入 Node / Python 的最小可信入口。")
                 lines.append("回滚方式：\(sessionAlignmentRollbackNote)")

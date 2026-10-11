@@ -12,6 +12,7 @@ enum RuntimeDiagnosticVerificationStatus: String, Codable, Sendable {
     case pendingManualAction
     case passed
     case unchanged
+    case needsAttention
     case failed
 
     var displayName: String {
@@ -20,6 +21,7 @@ enum RuntimeDiagnosticVerificationStatus: String, Codable, Sendable {
         case .pendingManualAction: return "等待手动执行"
         case .passed: return "验证通过"
         case .unchanged: return "验证未通过"
+        case .needsAttention: return "仍需关注"
         case .failed: return "验证失败"
         }
     }

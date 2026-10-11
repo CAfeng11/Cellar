@@ -1127,6 +1127,32 @@ enum RuntimeDoctorService {
         return uniqueLines(existing.joined(separator: "\n") + "\n" + globText)
     }
 
+    // Discover installed opt links, not retained Cellar versions, without changing the default interpreter.
+    nonisolated static func homebrewPythonCandidatePaths(prefixes: [String] = ["/opt/homebrew", "/usr/local"]) -> [String] {
+        let manager = FileManager.default
+        var candidates = Set<String>()
+        for prefix in prefixes {
+            let root = URL(fileURLWithPath: prefix)
+            let opt = root.appendingPathComponent("opt")
+            let formulae = (try? manager.contentsOfDirectory(at: opt, includingPropertiesForKeys: nil)) ?? []
+            let directories = [root.appendingPathComponent("bin")] + formulae
+                .filter { $0.lastPathComponent.hasPrefix("python@") }
+                .flatMap { entry in
+                    let formula = opt.appendingPathComponent(entry.lastPathComponent)
+                    return [formula.appendingPathComponent("libexec/bin"), formula.appendingPathComponent("bin")]
+                }
+            for directory in directories {
+                let entries = (try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+                for entry in entries where entry.lastPathComponent.range(of: "^python3(?:\\.[0-9]+)?t?$", options: .regularExpression) != nil {
+                    guard manager.isExecutableFile(atPath: entry.path),
+                          (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == false else { continue }
+                    candidates.insert(directory.appendingPathComponent(entry.lastPathComponent).path)
+                }
+            }
+        }
+        return candidates.sorted()
+    }
+
     private static func discoverCandidatePythonPaths(existing: [String]) async throws -> [String] {
         let globText = try await shell("""
         print -rl -- \
@@ -1141,7 +1167,7 @@ enum RuntimeDoctorService {
         ~/micromamba/bin/python(N) \
         /Library/Frameworks/Python.framework/Versions/*/bin/python3(N)
         """)
-        return uniqueLines(existing.joined(separator: "\n") + "\n" + globText)
+        return uniqueLines((existing + homebrewPythonCandidatePaths()).joined(separator: "\n") + "\n" + globText)
     }
 
     private static func buildPythonToolEntries(

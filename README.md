@@ -128,8 +128,8 @@ for the threat model and vulnerability-reporting process.
 
 ## Current source version
 
-The source tree is **Cellar 2.2.5 build 5**. The public binary download above
-remains 2.2.3 build 2; no 2.2.5 binary release has been published.
+The source tree is **Cellar 2.2.6 build 6**. The public binary download above
+remains 2.2.3 build 2; no 2.2.6 binary release has been published.
 
 This source revision preserves cancelled download outcomes, associates progress
 with files opened by the current Homebrew process and its children, compares
@@ -137,11 +137,18 @@ Formula versions using the linked keg, and retains early errors alongside the
 useful end of a failed command's output. Overall failure and verified partial
 completion remain separate.
 
-Validation: 127 tests passed with no failures or skips, and the Universal macOS
+Validation of the preceding 2.2.5 download fixes: 127 tests passed with no failures
+or skips, and the Universal macOS
 Release build passed. Installed-app GUI interaction and screenshots verified
 linked versions and retained kegs for three Formulae. The unchanged diagnostic
 view was also checked in an isolated native window using an actual failed
 upgrade log; this was a GUI replay rather than a new installed-app failure.
+
+Runtime Doctor discovers versioned Homebrew Python and `opt/.../libexec/bin` aliases.
+Minimal Trusted PATH keeps the login Shell-selected Python ahead of generic aliases
+while retaining Node and user tools. Alignment checks both runtimes and reports
+remaining warnings explicitly; it does not silently select a new Shell interpreter
+or edit shell configuration. The current suite contains 136 passing tests.
 
 ## Build from source
 

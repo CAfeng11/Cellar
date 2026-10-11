@@ -221,7 +221,7 @@ private struct RuntimeDashboardSection: View {
                     line1: "Minimal Trusted PATH（推荐）",
                     line2: "当前会话 PATH 为 Cellar 全局共享",
                     line3: "默认只保留核心可信路径；一个运行时完成对齐后，另一个运行时也可能同步变得可见。",
-                    status: needsAttentionCount == 0 ? "策略正常" : "关注 \(needsAttentionCount) 项",
+                    status: needsAttentionCount == 0 ? "运行时健康" : "\(needsAttentionCount) 个运行时需关注",
                     tint: needsAttentionCount == 0 ? .green : .orange
                 )
                 RuntimeCard(

@@ -71,12 +71,13 @@ final class RuntimeDoctorViewModel: ObservableObject {
             let kind = previousSnapshot?.kind ?? self.currentRuntime
             self.snapshot = newSnapshots[kind] ?? newSnapshots[self.currentRuntime]
             let scopedActionIDs = verificationActionIDs ?? actionID.map { [$0] } ?? []
-            let status = RuntimeActionRunner.verificationStatus(
-                before: previousSnapshot,
-                after: self.snapshot,
-                relatedActionIDs: scopedActionIDs
-            )
-            let detail = successDetail ?? (status == .passed
+            let isUnionAlignment = actionID == RuntimeTrustedPathUnion.currentSessionActionID
+            let status = isUnionAlignment
+                ? RuntimeActionRunner.sessionAlignmentStatus(snapshots: RuntimeKind.allCases.compactMap { newSnapshots[$0] })
+                : RuntimeActionRunner.verificationStatus(before: previousSnapshot, after: self.snapshot, relatedActionIDs: scopedActionIDs)
+            let detail = isUnionAlignment
+                ? RuntimeActionRunner.sessionAlignmentDetail(snapshots: RuntimeKind.allCases.compactMap { newSnapshots[$0] })
+                : successDetail ?? (status == .passed
                 ? "动作已执行，相关运行时问题已消失或降级。"
                 : "动作已执行，但相关问题仍存在；请查看下一步建议或导出诊断报告。")
             let event = RuntimeActionRunner.event(
@@ -97,7 +98,7 @@ final class RuntimeDoctorViewModel: ObservableObject {
                 verificationResult: status,
                 rollbackCommandOrNote: rollbackCommandOrNote
             )
-            self.log("运行时验证结果：\(status.displayName)", type: status == .passed ? .success : .info)
+            self.log("运行时验证结果：\(status.displayName)；\(detail)", type: status == .passed ? .success : .info)
         } catch {
             self.scanFailureMessage = error.localizedDescription
             self.errorMessage = "动作后验证失败: \(error.localizedDescription)"

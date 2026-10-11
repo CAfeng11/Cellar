@@ -2638,6 +2638,8 @@ struct FooterArea: View {
                 return ("当前会话已对齐", "\(event.detail) 这只代表 PATH 当前会话状态，不代表 Runtime 全局工具 latest 已全部复核。")
             case .pendingManualAction:
                 return ("验证命令已复制", "\(event.detail) 这只代表 PATH 当前会话验证命令，不代表 Runtime 全局工具 latest 已全部复核。")
+            case .needsAttention:
+                return ("已对齐，仍需关注", event.detail)
             case .failed, .unchanged:
                 return ("需要复核", event.detail)
             case .notRequired:

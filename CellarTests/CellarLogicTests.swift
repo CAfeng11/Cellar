@@ -2338,6 +2338,97 @@ final class CellarLogicTests: XCTestCase {
         XCTAssertTrue(snapshot.pathPolicy.summary.contains("不完整复制登录 Shell"))
     }
 
+    @MainActor
+    func testTrustedUnionPrioritizesSelectedPythonAliasBeforeGenericHomebrewBin() {
+        let python = pythonSnapshot(path: "/opt/homebrew/opt/python@3.14/libexec/bin/python3")
+        let union = RuntimeTrustedPathUnion(snapshots: [makeNodeSnapshot(issues: []), python])
+        XCTAssertEqual(union.processEntries.first, "/opt/homebrew/opt/python@3.14/libexec/bin")
+        XCTAssertTrue(union.processEntries.contains("/opt/homebrew/bin"))
+        XCTAssertTrue(union.processEntries.contains(NSHomeDirectory() + "/.npm-global/bin"))
+    }
+
+    @MainActor
+    func testSessionUnionVerificationDoesNotCallRemainingSystemPythonWarningUnnecessary() {
+        let issue = RuntimeIssue(title: "系统 Python 正在充当主环境", currentState: "System", explanation: "", recommendation: "", severity: .warning)
+        let snapshot = pythonSnapshot(path: "/usr/bin/python3", issues: [issue])
+        XCTAssertEqual(RuntimeActionRunner.verificationStatus(before: snapshot, after: snapshot, relatedActionIDs: [RuntimeTrustedPathUnion.currentSessionActionID]), .needsAttention)
+    }
+
+    @MainActor
+    func testSessionUnionVerificationConfirmsAnAlreadyHealthyEnvironment() {
+        let snapshot = pythonSnapshot(path: "/opt/homebrew/opt/python@3.14/libexec/bin/python3")
+        XCTAssertEqual(RuntimeActionRunner.verificationStatus(before: snapshot, after: snapshot, relatedActionIDs: [RuntimeTrustedPathUnion.currentSessionActionID]), .passed)
+    }
+
+    @MainActor
+    func testPythonSystemSourceHasActionableGuidanceEvenWhenAlreadyAligned() {
+        let issue = RuntimeIssue(title: "系统 Python 正在充当主环境", currentState: "System", explanation: "", recommendation: "", severity: .warning)
+        let snapshot = pythonSnapshot(path: "/usr/bin/python3", issues: [issue])
+        XCTAssertTrue(snapshot.fixSummary.contains { $0.contains("主来源") })
+    }
+
+    @MainActor
+    func testSelectedPythonUnionIsIdempotentAndPreservesNodeUserTools() {
+        let snapshots = [makeNodeSnapshot(issues: []), pythonSnapshot(path: "/opt/homebrew/opt/python@3.14/libexec/bin/python3")]
+        let first = RuntimeTrustedPathUnion(snapshots: snapshots)
+        let second = RuntimeTrustedPathUnion(snapshots: snapshots.reversed())
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(first.processEntries.count, Set(first.processEntries).count)
+        XCTAssertTrue(first.processEntries.contains(NSHomeDirectory() + "/Library/Python/3.14/bin"))
+    }
+
+    @MainActor
+    func testHomebrewPythonDiscoveryFindsVersionedAndLibexecAliasesWithoutConfigurationExecutables() throws {
+        let prefix = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).resolvingSymlinksInPath()
+        defer { try? FileManager.default.removeItem(at: prefix) }
+        let bin = prefix.appendingPathComponent("bin")
+        let aliases = prefix.appendingPathComponent("opt/python@3.14/libexec/bin")
+        for dir in [bin, aliases] { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+        for url in [bin.appendingPathComponent("python3.14"), aliases.appendingPathComponent("python3"), aliases.appendingPathComponent("python3-config")] {
+            try "#!/bin/sh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent("python3.15").path, withDestinationPath: "/nonexistent/cellar-python-fixture")
+        XCTAssertEqual(Set(RuntimeDoctorService.homebrewPythonCandidatePaths(prefixes: [prefix.path])), Set([bin.appendingPathComponent("python3.14").path, aliases.appendingPathComponent("python3").path]))
+    }
+
+    @MainActor
+    func testAlignmentFeedbackKeepsWarningsFromBothRuntimesVisible() {
+        let issue = RuntimeIssue(title: "系统 Python 正在充当主环境", currentState: "System", explanation: "", recommendation: "", severity: .warning)
+        let snapshots = [makeNodeSnapshot(issues: []), pythonSnapshot(path: "/usr/bin/python3", issues: [issue])]
+        XCTAssertEqual(RuntimeActionRunner.sessionAlignmentStatus(snapshots: snapshots), .needsAttention)
+        XCTAssertTrue(RuntimeActionRunner.sessionAlignmentDetail(snapshots: snapshots).contains("Python：系统 Python"))
+        XCTAssertTrue(RuntimeActionRunner.sessionAlignmentDetail(snapshots: snapshots).contains("不会切换登录 Shell"))
+        XCTAssertEqual(RuntimeDiagnosticVerificationStatus.needsAttention.displayName, "仍需关注")
+        XCTAssertEqual(RuntimeActionRunner.sessionAlignmentStatus(snapshots: []), .failed)
+    }
+
+    @MainActor
+    func testSystemPythonDiscoveryDoesNotSelectInactiveHomebrewInterpreter() {
+        let snapshot = pythonSnapshot(path: "/usr/bin/python3")
+        XCTAssertFalse(RuntimeTrustedPathUnion(snapshots: [snapshot]).processEntries.contains("/opt/homebrew/opt/python@3.14/libexec/bin"))
+        XCTAssertEqual(snapshot.loginNodePath, "/usr/bin/python3")
+    }
+
+    @MainActor
+    func testPythonManagerShimsRemainSelectedAheadOfNodeHomebrewDirectory() {
+        for path in [NSHomeDirectory() + "/.pyenv/shims/python3", NSHomeDirectory() + "/miniconda3/bin/python3"] {
+            let selected = pythonSnapshot(path: path)
+            let union = RuntimeTrustedPathUnion(snapshots: [makeNodeSnapshot(issues: []), selected])
+            XCTAssertEqual(union.processEntries.first, URL(fileURLWithPath: path).deletingLastPathComponent().path)
+            XCTAssertTrue(union.processEntries.contains("/opt/homebrew/bin"))
+        }
+    }
+
+    @MainActor
+    private func pythonSnapshot(path: String, issues: [RuntimeIssue] = []) -> RuntimeSnapshot {
+        let executable = RuntimeExecutableSnapshot(name: "Python", version: "Python 3.14.8", path: path, provider: path == "/usr/bin/python3" ? .system : .homebrew)
+        return RuntimeSnapshot(kind: .python, activeExecutable: executable, loginShellExecutable: executable, guiExecutable: executable,
+            packageManagers: [RuntimePackageManagerSnapshot(identifier: "python-module-pip", displayName: "python -m pip", guiVersion: "pip 26.2", guiPath: path, loginShellVersion: "pip 26.2", loginShellPath: path, prefix: NSHomeDirectory() + "/Library/Python/3.14", globalBinPath: NSHomeDirectory() + "/Library/Python/3.14/bin", globalRootPath: nil, shellToolCount: 0)],
+            pathSnapshot: RuntimePathSnapshot(guiEntries: ["/opt/homebrew/bin", "/usr/bin"], loginShellEntries: ["/opt/homebrew/bin", "/usr/bin"]), installations: [], toolEntries: [], issues: issues,
+            pathPolicy: RuntimePATHPolicyCatalog.policy(.minimalTrusted, runtimeName: "Python"), reportMarkdown: "")
+    }
+
     func testRuntimeTrustedPathUnionCombinesNodeAndPythonTrustedBins() {
         let node = makeNodeSnapshot(issues: [])
         let python = makePythonSnapshot(issues: [])

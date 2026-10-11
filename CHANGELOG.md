@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [2.2.6] - 2026-10-11（本地验证，build 6，未发布）
+
+- Runtime Doctor 发现 Homebrew 版本化 Python 及 opt/libexec 的通用入口；只读识别不会自动更换 Shell 主来源。
+- 最小可信 PATH union 保持 Shell 选定的 Python 入口优先，同时保留 Node 与用户工具入口，避免基础 Homebrew bin 抢占版本化解释器。
+- 对齐后复核 Node / Python 的整体健康；残余问题显示“仍需关注”及具体原因，不再以“无需验证”暗示健康。
+- PATH Policy 卡片明确计数的是需关注的运行时；系统 Python 主来源提供选择指导。
+- 新增版本化入口、路径优先级、幂等、残余警告及 pyenv/conda 保留的回归测试。
+
 ## [2.2.5] - 2026-10-10（本地验证，build 5，未发布）
 
 - 本机安装构建包含以下四项修复；公开下载与 Release 仍保持现有版本。127 项测试已通过，构建号递增以对应最终源码与安装包。

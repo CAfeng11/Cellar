@@ -129,7 +129,7 @@ enum AppEventFactory {
 
     private static func severity(for status: RuntimeDiagnosticVerificationStatus) -> AppEventSeverity {
         switch status {
-        case .notRequired, .pendingManualAction: return .attention
+        case .notRequired, .pendingManualAction, .needsAttention: return .attention
         case .passed: return .success
         case .unchanged, .failed: return .failure
         }
