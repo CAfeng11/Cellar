@@ -128,8 +128,8 @@ for the threat model and vulnerability-reporting process.
 
 ## Current source version
 
-The source tree is **Cellar 2.2.6 build 6**. The public binary download above
-remains 2.2.3 build 2; no 2.2.6 binary release has been published.
+The source tree is **Cellar 2.2.7 build 7**. The public binary download above
+remains 2.2.3 build 2; no 2.2.7 binary release has been published.
 
 This source revision preserves cancelled download outcomes, associates progress
 with files opened by the current Homebrew process and its children, compares
@@ -148,7 +148,11 @@ Runtime Doctor discovers versioned Homebrew Python and `opt/.../libexec/bin` ali
 Minimal Trusted PATH keeps the login Shell-selected Python ahead of generic aliases
 while retaining Node and user tools. Alignment checks both runtimes and reports
 remaining warnings explicitly; it does not silently select a new Shell interpreter
-or edit shell configuration. The current suite contains 136 passing tests.
+or edit shell configuration. The preceding 2.2.6 suite contained 136 passing tests.
+
+Formula repository versions include Homebrew revision metadata. Matching linked
+versions no longer show a false revision difference; retained kegs and actual
+outdated candidates remain separate. The current suite contains 144 passing tests.
 
 ## Build from source
 

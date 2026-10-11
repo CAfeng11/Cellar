@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [2.2.7] - 2026-10-11（本地验证，build 7，未发布）
+
+- Formula 仓库版本同时解析 stable 与 revision，正确显示完整包版本，避免已链接的最新 revision 被误记为版本差异。
+- 保留真实可升级状态与多 keg 的已链接/旧版本信息；缺失或为零的 revision 保持兼容，不混入 bottle rebuild。
+- 新增真实元数据样例及当前版本、多 keg、实际可升级和未知版本的回归覆盖。
+
 ## [2.2.6] - 2026-10-11（本地验证，build 6，未发布）
 
 - Runtime Doctor 发现 Homebrew 版本化 Python 及 opt/libexec 的通用入口；只读识别不会自动更换 Shell 主来源。

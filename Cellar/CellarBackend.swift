@@ -2478,7 +2478,22 @@ struct JSONParser {
         let cleanJSON = extractBalancedJSON(from: text) ?? text
         guard let data = cleanJSON.data(using: .utf8) else { throw BrewError.parseError("Encoding Error") }
         struct Root: Decodable { let formulae: [FormulaInfo]; let casks: [CaskInfo] }
-        struct FormulaInfo: Decodable { let name: String; let desc: String?; let versions: Versions?; let installed: [InstalledEntry]?; let linked_keg: String?; struct Versions: Decodable { let stable: String? }; struct InstalledEntry: Decodable { let version: String } }
+        struct FormulaInfo: Decodable {
+            let name: String
+            let desc: String?
+            let versions: Versions?
+            let revision: Int?
+            let installed: [InstalledEntry]?
+            let linked_keg: String?
+            struct Versions: Decodable { let stable: String? }
+            struct InstalledEntry: Decodable { let version: String }
+
+            var packageVersion: String {
+                let stable = versions?.stable ?? "?"
+                guard stable != "?", let revision, revision > 0 else { return stable }
+                return "\(stable)_\(revision)"
+            }
+        }
 
         // --- BEGIN APPEND: CaskInfo C3-R1-STRICT-R2 ---
         struct CaskInfo: Decodable {
@@ -2492,7 +2507,7 @@ struct JSONParser {
 
         do {
             let r = try JSONDecoder().decode(Root.self, from: data)
-            let f = r.formulae.map { info in BrewPackage(name: info.name, desc: info.desc, installedVersions: info.installed?.map { $0.version } ?? [], currentVersion: info.versions?.stable ?? "?", isPinned: false, isLeaf: leaves.contains(info.name), type: .formula, autoUpdates: false, installedSizeBytes: nil, appArtifactNames: [], linkedFormulaVersion: info.linked_keg) }
+            let f = r.formulae.map { info in BrewPackage(name: info.name, desc: info.desc, installedVersions: info.installed?.map { $0.version } ?? [], currentVersion: info.packageVersion, isPinned: false, isLeaf: leaves.contains(info.name), type: .formula, autoUpdates: false, installedSizeBytes: nil, appArtifactNames: [], linkedFormulaVersion: info.linked_keg) }
 
             // --- BEGIN MAPPER: Cask C3-R1-STRICT-R2 ---
             let c = r.casks.compactMap { info -> BrewPackage? in

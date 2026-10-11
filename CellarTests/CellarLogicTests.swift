@@ -3,6 +3,92 @@ import XCTest
 
 final class CellarLogicTests: XCTestCase {
     @MainActor
+    func testInstalledFormulaRevisionMetadataKeepsRealExamplesCurrent() throws {
+        for (name, stable, old) in [("certifi", "2026.7.22", true), ("cffi", "2.1.1", true), ("duti", "1.5.4", false)] {
+            let current = stable + "_1"
+            let package = try formulaRevisionPackage(name: name, stable: stable, revision: 1, installed: old ? [stable, current] : [current], linked: current)
+            XCTAssertEqual(package.currentVersion, current, name)
+            XCTAssertEqual(package.versionDifferenceKind, .none, name)
+            XCTAssertFalse(package.hasRepoDiff, name)
+            XCTAssertEqual(PackageVersionTablePresentation.make(for: package, isLibrary: true).visibleText, current, name)
+            XCTAssertFalse(PackageStateBadgeFactory.badges(for: package, isLibrary: true).contains { $0.kind == "formula-revision" }, name)
+            XCTAssertEqual(package.versionDisplay.contains("保留"), old, name)
+        }
+    }
+
+    @MainActor
+    func testFormulaRevisionZeroAndMissingMetadataKeepPlainStableVersion() throws {
+        for revision in [nil, 0] as [Int?] {
+            let package = try formulaRevisionPackage(stable: "1.2", revision: revision, installed: ["1.2"], linked: "1.2")
+            XCTAssertEqual(package.currentVersion, "1.2")
+            XCTAssertEqual(package.versionDifferenceKind, .none)
+        }
+    }
+
+    @MainActor
+    func testFormulaRevisionKeepsOlderLinkedVersionVisibleWhenNewerKegIsRetained() throws {
+        let package = try formulaRevisionPackage(stable: "1.2", revision: 2, installed: ["1.2_2", "1.2_1"], linked: "1.2_1")
+        XCTAssertEqual(package.currentVersion, "1.2_2")
+        XCTAssertEqual(package.versionDifferenceKind, .formulaRevision)
+        XCTAssertTrue(package.versionDisplay.hasPrefix("1.2_1（已链接）"))
+        XCTAssertTrue(package.versionDisplay.contains("保留 1.2_2"))
+        XCTAssertEqual(package.versionDifferenceKind(isOutdatedCandidate: true), .outdatedCandidate)
+    }
+
+    @MainActor
+    func testFormulaRevisionCurrentLinkedKegIgnoresRetainedOlderRevisionInEitherOrder() throws {
+        for versions in [["1.2", "1.2_2"], ["1.2_2", "1.2"]] {
+            let package = try formulaRevisionPackage(stable: "1.2", revision: 2, installed: versions, linked: "1.2_2")
+            XCTAssertEqual(package.currentVersion, "1.2_2")
+            XCTAssertEqual(package.versionDifferenceKind, .none)
+            XCTAssertTrue(package.versionDisplay.hasPrefix("1.2_2（已链接）"))
+            XCTAssertTrue(package.versionDisplay.contains("保留 1.2"))
+        }
+    }
+
+    @MainActor
+    func testFormulaRevisionMetadataPreservesActualOutdatedCandidate() throws {
+        let json = #"{"formulae":[{"name":"sample","current_version":"1.2_2","installed_versions":["1.2_1"],"pinned":false}],"casks":[]}"#
+        let package = try XCTUnwrap(JSONParser.parseOutdated(json).first)
+        XCTAssertEqual(package.currentVersion, "1.2_2")
+        XCTAssertEqual(package.installedVersions, ["1.2_1"])
+        XCTAssertEqual(PackageVersionTablePresentation.make(for: package, isLibrary: false).visibleText, "1.2_2（可升级）")
+    }
+
+    @MainActor
+    func testFormulaRevisionDoesNotUseBottleRebuildAsPackageRevision() throws {
+        let package = try formulaRevisionPackage(stable: "1.2", revision: 1, installed: ["1.2_1"], linked: "1.2_1", bottleRebuild: 7)
+        XCTAssertEqual(package.currentVersion, "1.2_1")
+        XCTAssertEqual(package.versionDifferenceKind, .none)
+    }
+
+    @MainActor
+    func testFormulaRevisionUnknownStableRemainsUnknown() throws {
+        let package = try formulaRevisionPackage(stable: nil, revision: 2, installed: ["1.2_2"], linked: "1.2_2")
+        XCTAssertEqual(package.currentVersion, "?")
+        XCTAssertEqual(package.versionDifferenceKind, .none)
+    }
+
+    @MainActor
+    func testFormulaRevisionMissingLinkUsesHighestNumericInstalledRevision() throws {
+        for versions in [["1.2_2", "1.2_10"], ["1.2_10", "1.2_2"]] {
+            let package = try formulaRevisionPackage(stable: "1.2", revision: 10, installed: versions, linked: nil)
+            XCTAssertEqual(package.currentVersion, "1.2_10")
+            XCTAssertEqual(package.versionDifferenceKind, .none)
+        }
+    }
+
+    @MainActor
+    private func formulaRevisionPackage(name: String = "sample", stable: String?, revision: Int?, installed: [String], linked: String?, bottleRebuild: Int? = nil) throws -> BrewPackage {
+        var formula: [String: Any] = ["name": name, "versions": stable.map { ["stable": $0] } ?? [:], "installed": installed.map { ["version": $0] }]
+        if let revision { formula["revision"] = revision }
+        if let linked { formula["linked_keg"] = linked }
+        if let bottleRebuild { formula["bottle"] = ["stable": ["rebuild": bottleRebuild]] }
+        let json = try JSONSerialization.data(withJSONObject: ["formulae": [formula], "casks": []])
+        return try XCTUnwrap(JSONParser.parseInstalled(String(decoding: json, as: UTF8.self), leaves: []).first)
+    }
+
+    @MainActor
     func testMultiKegLinkedLatestVersionIgnoresRetainedOlderKegs() throws {
         for (name, old, latest) in [("simdjson", "5.0.2", "5.0.3"), ("node", "26.10.0_2", "26.11.1"), ("uv", "0.12.23", "0.13.0")] {
             for versions in [[old, latest], [latest, old]] {
