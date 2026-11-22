@@ -26,6 +26,8 @@ Cellar 是一款原生 SwiftUI 菜单栏应用和完整窗口工作区。它不�
 
 [**下载 Cellar 2.2.3 build 2 未签名预览版（Universal App）**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS-unsigned.zip)
 
+[**Cellar 2.2.8 build 8 未公证预览版（Universal App）**](https://github.com/CAfeng11/Cellar/releases/tag/v2.2.8-beta.1)
+
 需要 macOS 14 或更高版本，以及现有 Homebrew 安装。Release 是同时支持 Apple
 Silicon 与 Intel Mac 的 Universal App。
 
@@ -116,7 +118,7 @@ Cellar 面向希望使用 GUI、又不愿失去证据链的开发者和 Mac 高�
 
 ## 当前源码版本
 
-当前源码为 **Cellar 2.2.8 build 8**。上方公开二进制下载仍为 2.2.3 build 2。
+当前源码为 **Cellar 2.2.8 build 8**，已通过上方链接发布为未公证预览版。稳定渠道的下载仍为 2.2.3 build 2。
 
 检查 Homebrew 或刷新元数据时，Cellar 会复核并隔离损坏的 Portable Ruby 缓存包，然后重试原命令。名称筛选中的纯空白输入按空筛选处理。
 

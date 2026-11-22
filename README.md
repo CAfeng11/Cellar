@@ -27,6 +27,8 @@ before anything is modified.
 
 [**Download Cellar 2.2.3 build 2 Unsigned Preview (Universal App)**](https://github.com/CAfeng11/Cellar/releases/latest/download/Cellar-macOS-unsigned.zip)
 
+[**Cellar 2.2.8 build 8 Unnotarized Preview (Universal App)**](https://github.com/CAfeng11/Cellar/releases/tag/v2.2.8-beta.1)
+
 Requirements: macOS 14 or newer and an existing Homebrew installation. The release
 is a Universal app for Apple Silicon and Intel Macs.
 
@@ -128,8 +130,8 @@ for the threat model and vulnerability-reporting process.
 
 ## Current source version
 
-The source tree is **Cellar 2.2.8 build 8**. The public binary download above
-remains 2.2.3 build 2.
+The source tree is **Cellar 2.2.8 build 8**, available as the unnotarized
+prerelease linked above. The stable-channel download remains 2.2.3 build 2.
 
 During Homebrew checks and metadata refreshes, Cellar verifies and quarantines a
 damaged Portable Ruby cache archive before retrying the command. Whitespace-only

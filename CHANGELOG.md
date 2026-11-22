@@ -4,7 +4,9 @@
 
 ## [Unreleased]
 
-## [2.2.8] - 2026-11-22（build 8，本地打包）
+## [2.2.8] - 2026-11-22（build 8，未公证预览版）
+
+稳定渠道的下载仍为 2.2.3 build 2。 [2.2.8 预览版发布页](https://github.com/CAfeng11/Cellar/releases/tag/v2.2.8-beta.1)
 
 - 检查更新、刷新已安装列表和维护 Homebrew 仓库时，识别 Portable Ruby 缓存校验失败与安装锁占用。确认损坏后只隔离该缓存包，并让 Homebrew 重试及校验。
 - 更新列表和酒窖列表的名称筛选忽略首尾空白，纯空白输入等同未输入名称。
