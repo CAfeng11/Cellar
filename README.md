@@ -128,12 +128,16 @@ for the threat model and vulnerability-reporting process.
 
 ## Current source version
 
-The source tree is **Cellar 2.2.7 build 7**. The public binary download above
-remains 2.2.3 build 2; no 2.2.7 binary release has been published.
+The source tree is **Cellar 2.2.8 build 8**. The public binary download above
+remains 2.2.3 build 2.
 
-This source revision preserves cancelled download outcomes, associates progress
-with files opened by the current Homebrew process and its children, compares
-Formula versions using the linked keg, and retains early errors alongside the
+During Homebrew checks and metadata refreshes, Cellar verifies and quarantines a
+damaged Portable Ruby cache archive before retrying the command. Whitespace-only
+package name filters are treated as empty.
+
+Earlier fixes preserve cancelled download outcomes, associate progress
+with files opened by the current Homebrew process and its children, compare
+Formula versions using the linked keg, and retain early errors alongside the
 useful end of a failed command's output. Overall failure and verified partial
 completion remain separate.
 
@@ -152,7 +156,7 @@ or edit shell configuration. The preceding 2.2.6 suite contained 136 passing tes
 
 Formula repository versions include Homebrew revision metadata. Matching linked
 versions no longer show a false revision difference; retained kegs and actual
-outdated candidates remain separate. The current suite contains 144 passing tests.
+outdated candidates remain separate. The 2.2.7 suite contained 144 passing tests.
 
 ## Build from source
 

@@ -2293,30 +2293,43 @@ actor BrewService {
         if let f = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) { return f }
         throw BrewError.brewNotFound
     }
-    private func runSync(_ cmd: BrewCommand) async throws -> String {
+    private func runSync(_ cmd: BrewCommand, recoveryLog: PortableRubyRecovery.Log? = nil) async throws -> String {
         let b = try getBrewPath()
-        return try await ShellService.runSynchronous(
-            executable: b,
-            args: cmd.args,
-            environment: proxyEnvironment,
-            timeoutSeconds: syncTimeout(for: cmd),
-            commandDisplay: cmd.displayCommand
-        )
+        let environment = proxyEnvironment
+        let timeout = syncTimeout(for: cmd)
+        let operation: @Sendable () async throws -> String = {
+            try await ShellService.runSynchronous(
+                executable: b, args: cmd.args, environment: environment,
+                timeoutSeconds: timeout, commandDisplay: cmd.displayCommand
+            )
+        }
+        if let recoveryLog {
+            return try await PortableRubyRecovery.run(
+                executable: b, environment: environment, log: recoveryLog, operation: operation
+            )
+        }
+        return try await operation()
     }
     private func safeSearchRun(_ cmd: BrewCommand) async throws -> String {
         do { return try await runSync(cmd) } catch let BrewError.executionFailed(code, _) where code == 1 { return "" } catch { throw error }
     }
     private func runStream(_ cmd: BrewCommand) async -> ShellCommandStream {
         guard let b = try? getBrewPath() else { return .init { $0.finish(throwing: BrewError.brewNotFound) } }
-        let monitor = downloadMonitor(for: cmd)
+        return runStream(cmd, executable: b, environment: proxyEnvironment)
+    }
+
+    private func runStream(
+        _ cmd: BrewCommand, executable: String, environment: [String: String]
+    ) -> ShellCommandStream {
+        let monitor = downloadMonitor(for: cmd, environment: environment)
         return ShellService.stream(
-            executable: b,
+            executable: executable,
             args: cmd.args,
-            environment: proxyEnvironment,
+            environment: environment,
             idleTimeoutSeconds: streamIdleTimeout(for: cmd),
             commandDisplay: cmd.displayCommand,
             downloadMonitor: monitor,
-            proxyState: HomebrewExplicitProxyState.make(environment: proxyEnvironment)
+            proxyState: HomebrewExplicitProxyState.make(environment: environment)
         )
     }
 
@@ -2352,7 +2365,7 @@ actor BrewService {
         }
     }
 
-    private func downloadMonitor(for cmd: BrewCommand) -> HomebrewDownloadEvidenceMonitor? {
+    private func downloadMonitor(for cmd: BrewCommand, environment: [String: String]) -> HomebrewDownloadEvidenceMonitor? {
         let targetTokens: [String]
         switch cmd {
         case .upgrade(let args):
@@ -2364,18 +2377,18 @@ actor BrewService {
         }
         return HomebrewDownloadEvidenceMonitor(
             directories: HomebrewDownloadEvidenceMonitor.defaultDownloadDirectories(
-                environment: HomebrewDownloadEvidenceMonitor.effectiveEnvironment(overrides: proxyEnvironment)
+                environment: HomebrewDownloadEvidenceMonitor.effectiveEnvironment(overrides: environment)
             ),
             targetTokens: targetTokens
         )
     }
 
-    func getPinnedList() async throws -> Set<String> {
-        let out = try await runSync(.listPinned)
+    func getPinnedList(onRecovery: @escaping PortableRubyRecovery.Log) async throws -> Set<String> {
+        let out = try await runSync(.listPinned, recoveryLog: onRecovery)
         return Set(out.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
     }
-    func checkOutdated() async throws -> [BrewPackage] {
-        let out = try await runSync(.checkOutdated)
+    func checkOutdated(onRecovery: @escaping PortableRubyRecovery.Log) async throws -> [BrewPackage] {
+        let out = try await runSync(.checkOutdated, recoveryLog: onRecovery)
         return try await Task.detached(priority: .utility) { try JSONParser.parseOutdated(out) }.value
     }
     func getInfo(name: String) async throws -> BrewInfo {
@@ -2388,10 +2401,9 @@ actor BrewService {
         let out = try await runSync(.info(name))
         return try await Task.detached(priority: .utility) { try JSONParser.parseInfoTyped(out) }.value
     }
-    func fetchInstalledList() async throws -> [BrewPackage] {
-        async let leavesTask = runSync(.listLeaves)
-        async let infoTask = runSync(.listInstalledJSON)
-        let (leavesOut, infoOut) = try await (leavesTask, infoTask)
+    func fetchInstalledList(onRecovery: @escaping PortableRubyRecovery.Log) async throws -> [BrewPackage] {
+        let infoOut = try await runSync(.listInstalledJSON, recoveryLog: onRecovery)
+        let leavesOut = try await runSync(.listLeaves, recoveryLog: onRecovery)
         return try await Task.detached(priority: .utility) {
             let leavesSet = Set(leavesOut.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) })
             return try JSONParser.parseInstalled(infoOut, leaves: leavesSet)
@@ -2411,7 +2423,16 @@ actor BrewService {
     }
     func install(_ name: String, isCask: Bool) async -> ShellCommandStream { await runStream(.install(name, isCask: isCask)) }
     func exportBrewfile(to url: URL) async throws { _ = try await runSync(.bundleDump(url.path)) }
-    func updateTap() async -> ShellCommandStream { await runStream(.update) }
+    func updateTap(onRecovery: PortableRubyRecovery.Log, onLine: PortableRubyRecovery.Log? = nil) async throws {
+        let executable = try getBrewPath()
+        let environment = proxyEnvironment
+        try await PortableRubyRecovery.run(executable: executable, environment: environment, log: onRecovery) {
+            for try await line in await self.runStream(.update, executable: executable, environment: environment) {
+                if let onLine { await onLine(line) }
+            }
+            try Task.checkCancellation()
+        }
+    }
     func upgrade(args: [String]) async -> ShellCommandStream { await runStream(.upgrade(args)) }
     func uninstall(_ pkg: BrewPackage) async -> ShellCommandStream { await runStream(.uninstall(pkg.name, isCask: pkg.type == .cask)) }
     func pinAction(name: String, pin: Bool) async -> ShellCommandStream { await runStream(pin ? .pin(name) : .unpin(name)) }

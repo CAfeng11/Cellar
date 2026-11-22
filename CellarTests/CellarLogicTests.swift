@@ -3,6 +3,19 @@ import XCTest
 
 final class CellarLogicTests: XCTestCase {
     @MainActor
+    func testPackageNameFilterTreatsWhitespaceAsEmptyAndTrimsSearchTerms() {
+        let names = ["git", "ca-certificates", "visual-studio-code"]
+
+        for input in ["", " ", "\t\n\u{3000}"] {
+            let filter = PackageNameFilter(input)
+            XCTAssertTrue(filter.query.isEmpty)
+            XCTAssertEqual(names.filter { filter.includes($0) }, names)
+        }
+        XCTAssertEqual(names.filter { PackageNameFilter(" \tSTUDIO \n").includes($0) }, ["visual-studio-code"])
+        XCTAssertTrue(names.filter { PackageNameFilter("git version").includes($0) }.isEmpty)
+    }
+
+    @MainActor
     func testInstalledFormulaRevisionMetadataKeepsRealExamplesCurrent() throws {
         for (name, stable, old) in [("certifi", "2026.7.22", true), ("cffi", "2.1.1", true), ("duti", "1.5.4", false)] {
             let current = stable + "_1"

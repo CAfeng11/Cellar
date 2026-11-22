@@ -37,7 +37,7 @@ extension BrewReliabilityIssue {
         switch kind {
         case .network, .dns, .proxy:
             return .connection
-        case .endpoint, .brewMissing, .permission, .xcodeLicense, .unknown:
+        case .endpoint, .brewMissing, .permission, .xcodeLicense, .portableRubyChecksum, .portableRubyLock, .unknown:
             return .homebrewService
         }
     }
@@ -619,7 +619,7 @@ private struct BrewReliabilityIssueView: View {
     private var color: Color {
         switch issue.kind {
         case .brewMissing, .permission, .xcodeLicense: return .red
-        case .network, .dns, .proxy, .endpoint: return .orange
+        case .network, .dns, .proxy, .endpoint, .portableRubyChecksum, .portableRubyLock: return .orange
         case .unknown: return .secondary
         }
     }
@@ -629,6 +629,8 @@ private struct BrewReliabilityIssueView: View {
         case .brewMissing: return "questionmark.app.dashed"
         case .permission, .xcodeLicense: return "lock.trianglebadge.exclamationmark"
         case .network, .dns, .proxy, .endpoint: return "network.slash"
+        case .portableRubyChecksum: return "archivebox"
+        case .portableRubyLock: return "lock"
         case .unknown: return "exclamationmark.triangle"
         }
     }

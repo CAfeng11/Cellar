@@ -282,16 +282,24 @@ final class AppState: ObservableObject {
         addLog(brewExplicitProxyLogLine, type: .info)
     }
 
+    private func logPortableRubyRecovery(_ message: String) {
+        addLog(message, type: .info)
+    }
+
+    var packageNameFilter: PackageNameFilter { PackageNameFilter(searchText) }
+
     var displayPackages: [BrewPackage] {
-        let filtered = outdatedPackages.filter { match(pkg: $0) }
+        let nameFilter = packageNameFilter
+        let filtered = outdatedPackages.filter { match(pkg: $0, nameFilter: nameFilter) }
         return filtered.sorted { ($0.isPinned != $1.isPinned) ? $0.isPinned : $0.name < $1.name }
     }
     var displayLibrary: [BrewPackage] {
-        let filtered = installedPackages.filter { match(pkg: $0) }
+        let nameFilter = packageNameFilter
+        let filtered = installedPackages.filter { match(pkg: $0, nameFilter: nameFilter) }
         return filtered.sorted { ($0.isPinned != $1.isPinned) ? $0.isPinned : $0.name < $1.name }
     }
-    private func match(pkg: BrewPackage) -> Bool {
-        let s = searchText.isEmpty || pkg.name.localizedCaseInsensitiveContains(searchText)
+    private func match(pkg: BrewPackage, nameFilter: PackageNameFilter) -> Bool {
+        let s = nameFilter.includes(pkg.name)
         let t = filterType == nil || pkg.type == filterType
         let p = !showPinnedOnly || pkg.isPinned
         let l = !showLeavesOnly || (activeTab == .library ? pkg.isLeaf : true)
@@ -314,8 +322,8 @@ final class AppState: ObservableObject {
     private func applyOutdatedSnapshot(source: HomebrewSnapshotSource = .brewOutdated) async throws -> [BrewPackage] {
         do {
             let installedTruth = try await installedPackagesForOutdatedTruth()
-            async let outTask = service.checkOutdated(); async let pinnedTask = service.getPinnedList()
-            let (pkgs, pins) = try await (outTask, pinnedTask)
+            let pkgs = try await service.checkOutdated(onRecovery: logPortableRubyRecovery)
+            let pins = try await service.getPinnedList(onRecovery: logPortableRubyRecovery)
             let merged = pkgs.map { p -> BrewPackage in var np = p; if pins.contains(p.name) { np.isPinned = true }; return np }
             let reconciled = reconcileOutdatedPackages(merged, using: installedTruth)
             let capturedAt = Date()
@@ -442,7 +450,7 @@ final class AppState: ObservableObject {
             if Date().timeIntervalSince(last) > threshold {
                 withAnimation { activity = .maintaining }; addLog("开始自动维护 (brew update)...", type: .info)
                 do {
-                    for try await _ in await service.updateTap() { if Task.isCancelled { throw CancellationError() } }
+                    try await service.updateTap(onRecovery: logPortableRubyRecovery)
                     try Task.checkCancellation()
                     self.lastBrewUpdateAt = Date(); addLog("自动维护完成", type: .success)
                 } catch {
@@ -483,7 +491,7 @@ final class AppState: ObservableObject {
     @discardableResult
     private func applyInstalledLibrarySnapshot() async throws -> [BrewPackage] {
         do {
-            let list = try await service.fetchInstalledList()
+            let list = try await service.fetchInstalledList(onRecovery: logPortableRubyRecovery)
             let capturedAt = Date()
             withAnimation {
                 self.installedPackages = list
@@ -534,7 +542,9 @@ final class AppState: ObservableObject {
                 logBrewExplicitProxyState()
                 if full {
                     addLog("正在更新 Homebrew 仓库...", type: .command)
-                    for try await line in await service.updateTap() { addLog(line, type: .stream) }
+                    try await service.updateTap(onRecovery: logPortableRubyRecovery) { line in
+                        self.addLog(line, type: .stream)
+                    }
                     try Task.checkCancellation()
                     self.lastBrewUpdateAt = Date()
                 }
@@ -1772,10 +1782,12 @@ struct DashboardView: View {
             NotificationCenter.default.post(name: .runtimeRefreshRequested, object: nil)
         case .showLibrary(let filter):
             appState.applyLibraryStateFilter(filter)
-	        case .showSettings(let section):
-	            appState.openReliabilitySettings(section)
-	        }
-	    }
+        case .showSettings(let section):
+            appState.openReliabilitySettings(section)
+        case .showLogs:
+            withAnimation { appState.showLogSheet = true }
+        }
+    }
 }
 
 private struct DashboardScrollableContent<Content: View>: View {
@@ -2298,7 +2310,8 @@ struct LibraryView: View {
 
     private var activeFilterDescriptions: [String] {
         var filters: [String] = []
-        if !appState.searchText.isEmpty { filters.append("“\(appState.searchText)”") }
+        let query = appState.packageNameFilter.query
+        if !query.isEmpty { filters.append("“\(query)”") }
         if let type = appState.filterType { filters.append("“\(type.rawValue)”") }
         if appState.showPinnedOnly { filters.append("“已锁定”") }
         if appState.showLeavesOnly && appState.packageStateFilter != .leaf { filters.append("“叶子包”") }

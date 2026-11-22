@@ -1,5 +1,17 @@
 import Foundation
 
+struct PackageNameFilter {
+    let query: String
+
+    init(_ input: String) {
+        query = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func includes(_ packageName: String) -> Bool {
+        query.isEmpty || packageName.localizedCaseInsensitiveContains(query)
+    }
+}
+
 enum PackageStateSeverity: String, Codable, Sendable {
     case info
     case attention

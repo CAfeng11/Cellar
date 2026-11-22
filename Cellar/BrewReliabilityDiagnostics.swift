@@ -6,6 +6,8 @@ enum BrewReliabilityIssueKind: String, Codable, CaseIterable, Sendable {
     case dns
     case proxy
     case endpoint
+    case portableRubyChecksum
+    case portableRubyLock
     case permission
     case brewMissing
     case unknown
@@ -17,6 +19,8 @@ enum BrewReliabilityIssueKind: String, Codable, CaseIterable, Sendable {
         case .dns: return "DNS 解析异常"
         case .proxy: return "代理可能不可用"
         case .endpoint: return "Homebrew 端点异常"
+        case .portableRubyChecksum: return "Portable Ruby 缓存校验失败"
+        case .portableRubyLock: return "Portable Ruby 安装锁被占用"
         case .permission: return "Homebrew 权限异常"
         case .brewMissing: return "未找到 Homebrew"
         case .unknown: return "Homebrew 异常"
@@ -48,6 +52,7 @@ enum BrewReliabilityDiagnostics {
     }
 
     static func diagnose(text: String) -> BrewReliabilityIssue {
+        if PortableRubyChecksumFailure.parse(text) != nil { return issue(for: .portableRubyChecksum) }
         let normalized = text.lowercased()
 
         if normalized.contains("xcode"), containsAny(normalized, [
@@ -67,6 +72,8 @@ enum BrewReliabilityDiagnostics {
         ]) {
             return issue(for: .permission)
         }
+
+        if PortableRubyRecovery.isLockContention(text) { return issue(for: .portableRubyLock) }
 
         if containsAny(normalized, [
             "could not resolve",
@@ -189,6 +196,26 @@ enum BrewReliabilityDiagnostics {
                 nextStep: "请在偏好设置测试核心服务可达性；必要时启用代理后重试。",
                 actionTitle: "测试核心端点",
                 manualCommands: ["curl -I https://api.github.com", "curl -I https://formulae.brew.sh"]
+            )
+        case .portableRubyChecksum:
+            return BrewReliabilityIssue(
+                kind: kind,
+                title: "Portable Ruby 缓存校验失败",
+                explanation: "Homebrew 报告 Portable Ruby 缓存包的 SHA-256 与预期值不符。",
+                impact: "依赖 Portable Ruby 的 Homebrew 命令可能无法启动。",
+                nextStep: "查看运行日志中的缓存隔离和重试结果。如果重新下载后仍校验失败，请检查下载来源和网络链路。",
+                actionTitle: "查看恢复日志",
+                manualCommands: []
+            )
+        case .portableRubyLock:
+            return BrewReliabilityIssue(
+                kind: kind,
+                title: "Portable Ruby 安装锁被占用",
+                explanation: "Homebrew 报告另一个 Portable Ruby 安装正在使用安装锁。",
+                impact: "其他需要 Portable Ruby 的 Homebrew 命令可能暂时无法启动。",
+                nextStep: "等待安装完成后，再检查更新。",
+                actionTitle: "查看运行日志",
+                manualCommands: []
             )
         case .permission:
             return BrewReliabilityIssue(

@@ -40,6 +40,7 @@ enum DashboardAction: Hashable, Codable, Sendable {
     case showRuntimeGlobalTool(String)
     case showLibrary(PackageStateFilterKey)
     case showSettings(SettingsReliabilitySection?)
+    case showLogs
 }
 
 struct DashboardActionItem: Identifiable, Codable, Hashable, Sendable {
@@ -236,14 +237,15 @@ struct DashboardHealthSummary: Codable, Hashable, Sendable {
         from issue: BrewReliabilityIssue,
         operationKind: BrewOperationKind
     ) -> DashboardActionItem {
-        DashboardActionItem(
+        let showRecoveryLog = issue.kind == .portableRubyChecksum || issue.kind == .portableRubyLock
+        return DashboardActionItem(
             id: "brew.reliability.\(operationKind.rawValue).\(issue.kind.rawValue)",
             source: "Homebrew",
             title: issue.title,
             detail: "\(issue.explanation) \(issue.impact)",
             severity: issue.kind == .network || issue.kind == .dns || issue.kind == .proxy || issue.kind == .endpoint ? .warning : .critical,
             actionTitle: issue.actionTitle,
-            action: .showSettings(issue.settingsSection)
+            action: showRecoveryLog ? .showLogs : .showSettings(issue.settingsSection)
         )
     }
 
